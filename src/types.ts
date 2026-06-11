@@ -113,6 +113,8 @@ export interface CampaignRow {
   campaignId?: string
   type: 'SP' | 'SB' | 'SD' | 'OTHER'
   state?: 'enabled' | 'paused' | 'archived'
+  portfolio?: string
+  portfolioId?: string
   impressions: number
   clicks: number
   spend: number

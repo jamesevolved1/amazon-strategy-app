@@ -93,7 +93,7 @@ function Shell() {
         <div className="fixed inset-0 z-50 lg:hidden">
           <div className="absolute inset-0 bg-ink/30" onClick={() => setMobileNav(false)} />
           <div className="absolute left-0 top-0 bottom-0 w-[260px]">
-            <Sidebar current={page} onNavigate={(p) => { setPage(p); setMobileNav(false) }} />
+            <Sidebar current={page} onNavigate={(p) => { setPage(p); setMobileNav(false) }} forceExpanded />
           </div>
         </div>
       )}

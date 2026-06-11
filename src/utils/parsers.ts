@@ -96,6 +96,8 @@ export async function parseBulkCampaigns(file: File): Promise<ParseResult<BulkCa
 
       const campaignId = toStr(pick(r, ['Campaign ID', 'CampaignId']))
       const state = (toStr(pick(r, ['State', 'Campaign State'])).toLowerCase() as 'enabled' | 'paused' | 'archived') || undefined
+      const portfolio = toStr(pick(r, ['Portfolio Name', 'Portfolio', 'Portfolio Name (Informational only)']))
+      const portfolioId = toStr(pick(r, ['Portfolio ID', 'PortfolioId']))
       const impressions = toNumber(pick(r, ['Impressions']))
       const clicks = toNumber(pick(r, ['Clicks']))
       const spend = toNumber(pick(r, ['Spend', 'Cost']))
@@ -110,7 +112,10 @@ export async function parseBulkCampaigns(file: File): Promise<ParseResult<BulkCa
 
       campaigns.push({
         campaign, campaignId: campaignId || undefined, type: tab.type,
-        state, impressions, clicks, spend, adSales, orders,
+        state,
+        portfolio: portfolio || undefined,
+        portfolioId: portfolioId || undefined,
+        impressions, clicks, spend, adSales, orders,
         ctr, cvr, roas, acos, cpc,
       })
     }

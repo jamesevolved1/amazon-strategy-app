@@ -22,6 +22,7 @@ export function ReportingDashboard() {
   const [preset, setPreset] = useState<RangePreset>('7d')
   const [campaignSearch, setCampaignSearch] = useState('')
   const [campaignFilter, setCampaignFilter] = useState<'all' | 'SP' | 'SB' | 'OTHER'>('all')
+  const [campaignPortfolio, setCampaignPortfolio] = useState<string>('all')
   const [campaignSort, setCampaignSort] = useState<'spend' | 'sales' | 'orders' | 'roas'>('spend')
 
   if (!currentClient || !currentBundle) {
@@ -71,13 +72,28 @@ export function ReportingDashboard() {
   const campaigns = bulk?.campaigns ?? []
   const adSummary = useMemo(() => adProductSummary(campaigns), [campaigns])
 
+  const portfolios = useMemo(() => {
+    const set = new Set<string>()
+    let unassigned = 0
+    for (const c of campaigns) {
+      if (c.portfolio) set.add(c.portfolio)
+      else unassigned++
+    }
+    const list = Array.from(set).sort((a, b) => a.localeCompare(b))
+    return { list, unassigned }
+  }, [campaigns])
+
   const filteredCampaigns = useMemo(() => {
     let rows = campaigns
     if (campaignFilter === 'OTHER') rows = rows.filter(c => c.type === 'SD' || c.type === 'OTHER')
     else if (campaignFilter !== 'all') rows = rows.filter(c => c.type === campaignFilter)
+    if (campaignPortfolio !== 'all') {
+      if (campaignPortfolio === '__none__') rows = rows.filter(c => !c.portfolio)
+      else rows = rows.filter(c => c.portfolio === campaignPortfolio)
+    }
     if (campaignSearch.trim()) {
       const q = campaignSearch.trim().toLowerCase()
-      rows = rows.filter(c => c.campaign.toLowerCase().includes(q) || (c.campaignId ?? '').toLowerCase().includes(q) || (c.product ?? '').toLowerCase().includes(q))
+      rows = rows.filter(c => c.campaign.toLowerCase().includes(q) || (c.campaignId ?? '').toLowerCase().includes(q) || (c.product ?? '').toLowerCase().includes(q) || (c.portfolio ?? '').toLowerCase().includes(q))
     }
     rows = rows.slice()
     switch (campaignSort) {
@@ -87,7 +103,7 @@ export function ReportingDashboard() {
       case 'roas': rows.sort((a, b) => b.roas - a.roas); break
     }
     return rows
-  }, [campaigns, campaignFilter, campaignSearch, campaignSort])
+  }, [campaigns, campaignFilter, campaignPortfolio, campaignSearch, campaignSort])
 
   const hasData = series.length > 0 || campaigns.length > 0
 
@@ -196,6 +212,9 @@ export function ReportingDashboard() {
         onSearch={setCampaignSearch}
         filter={campaignFilter}
         onFilter={setCampaignFilter}
+        portfolios={portfolios}
+        portfolio={campaignPortfolio}
+        onPortfolio={setCampaignPortfolio}
         sort={campaignSort}
         onSort={setCampaignSort}
         totalRowCount={campaigns.length}
@@ -464,12 +483,14 @@ function Stat({ label, value, hint, tone }: { label: string; value: React.ReactN
 }
 
 function CampaignTable({
-  campaigns, ccy, search, onSearch, filter, onFilter, sort, onSort, totalRowCount,
+  campaigns, ccy, search, onSearch, filter, onFilter, portfolios, portfolio, onPortfolio, sort, onSort, totalRowCount,
 }: {
   campaigns: CampaignRow[]
   ccy: import('../types').Currency
   search: string; onSearch: (v: string) => void
   filter: 'all' | 'SP' | 'SB' | 'OTHER'; onFilter: (v: 'all' | 'SP' | 'SB' | 'OTHER') => void
+  portfolios: { list: string[]; unassigned: number }
+  portfolio: string; onPortfolio: (v: string) => void
   sort: 'spend' | 'sales' | 'orders' | 'roas'; onSort: (v: 'spend' | 'sales' | 'orders' | 'roas') => void
   totalRowCount: number
 }) {
@@ -506,6 +527,18 @@ function CampaignTable({
               { id: 'OTHER', label: `Other (${num(campaigns.filter(c => c.type === 'SD' || c.type === 'OTHER').length)})` },
             ]}
           />
+          {(portfolios.list.length > 0 || portfolios.unassigned > 0) && (
+            <select
+              value={portfolio}
+              onChange={e => onPortfolio(e.target.value)}
+              className="px-3 py-1.5 rounded-full border border-line text-xs bg-canvas-panel max-w-[220px] truncate"
+              title="Filter by portfolio"
+            >
+              <option value="all">All portfolios ({portfolios.list.length + (portfolios.unassigned > 0 ? 1 : 0)})</option>
+              {portfolios.list.map(p => <option key={p} value={p}>{p}</option>)}
+              {portfolios.unassigned > 0 && <option value="__none__">No portfolio ({portfolios.unassigned})</option>}
+            </select>
+          )}
           <select
             value={sort}
             onChange={e => onSort(e.target.value as typeof sort)}
@@ -548,7 +581,10 @@ function CampaignTable({
               <tr key={`${c.campaignId ?? c.campaign}-${i}`} className="border-t border-line hover:bg-canvas-tint">
                 <td className="px-5 py-2.5 max-w-[420px]">
                   <div className="font-medium text-ink truncate">{c.campaign}</div>
-                  {c.campaignId && <div className="text-2xs text-ink-faint tnum">{c.campaignId}</div>}
+                  <div className="text-2xs text-ink-faint tnum truncate">
+                    {c.campaignId}
+                    {c.portfolio && <> · <span className="text-ink-mute">{c.portfolio}</span></>}
+                  </div>
                 </td>
                 <td className="px-3 py-2.5">
                   <Pill tone={c.type === 'SP' ? 'peri' : c.type === 'SB' ? 'mint' : c.type === 'SD' ? 'lavender' : 'mute'}>{c.type}</Pill>

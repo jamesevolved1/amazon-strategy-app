@@ -1,6 +1,6 @@
-import React, { useState } from 'react'
+import React, { useEffect, useState } from 'react'
 import {
-  BarChart3, LineChart, Boxes, Target, ClipboardCheck, CalendarDays, Upload, Users, Settings, Plus, ChevronsUpDown, Check, Trash2,
+  BarChart3, LineChart, Boxes, Target, ClipboardCheck, CalendarDays, Upload, Users, Settings, Plus, ChevronsUpDown, Check, Trash2, PanelLeftClose, PanelLeftOpen,
 } from 'lucide-react'
 import { useStore } from '../lib/store'
 import { cx } from './ui'
@@ -28,46 +28,90 @@ const NAV: Item[] = [
   { id: 'settings',     label: 'Settings',              icon: <Settings className="w-4 h-4" /> },
 ]
 
+const COLLAPSE_KEY = 'asa.sidebar.collapsed'
+
 export function Sidebar({
-  current, onNavigate,
-}: { current: PageId; onNavigate: (p: PageId) => void }) {
+  current, onNavigate, forceExpanded,
+}: { current: PageId; onNavigate: (p: PageId) => void; forceExpanded?: boolean }) {
+  const [collapsed, setCollapsed] = useState<boolean>(() => {
+    if (forceExpanded) return false
+    try { return localStorage.getItem(COLLAPSE_KEY) === '1' } catch { return false }
+  })
+
+  useEffect(() => {
+    if (forceExpanded) return
+    try { localStorage.setItem(COLLAPSE_KEY, collapsed ? '1' : '0') } catch {}
+  }, [collapsed, forceExpanded])
+
+  const isCollapsed = collapsed && !forceExpanded
+
   return (
-    <aside className="w-[240px] shrink-0 h-screen flex flex-col bg-canvas-panel border-r border-line">
-      <div className="px-5 pt-5 pb-3 flex items-center gap-2">
-        <span className="w-7 h-7 rounded-lg bg-ink flex items-center justify-center">
+    <aside
+      className={cx(
+        'shrink-0 h-screen flex flex-col bg-canvas-panel border-r border-line transition-[width] duration-200 ease-out',
+        isCollapsed ? 'w-[64px]' : 'w-[240px]',
+      )}
+    >
+      <div className={cx('flex items-center gap-2 pt-5 pb-3', isCollapsed ? 'px-3 justify-center' : 'px-5')}>
+        <span className="w-7 h-7 rounded-lg bg-ink flex items-center justify-center shrink-0">
           <svg viewBox="0 0 32 32" className="w-4 h-4">
             <path d="M9 21 L13 13 L19 18 L23 11" stroke="#9aa6f0" strokeWidth="2.4" fill="none" strokeLinecap="round" strokeLinejoin="round" />
             <circle cx="23" cy="11" r="1.8" fill="#a7d9b9" />
           </svg>
         </span>
-        <div className="leading-tight">
-          <div className="text-sm font-semibold text-ink">Amazon Strategy</div>
-          <div className="text-2xs text-ink-faint">Profit · PPC · Plans</div>
-        </div>
+        {!isCollapsed && (
+          <div className="leading-tight flex-1 min-w-0">
+            <div className="text-sm font-semibold text-ink truncate">Amazon Strategy</div>
+            <div className="text-2xs text-ink-faint truncate">Profit · PPC · Plans</div>
+          </div>
+        )}
+        {!forceExpanded && !isCollapsed && (
+          <button
+            onClick={() => setCollapsed(true)}
+            className="p-1 -mr-1 rounded-md text-ink-faint hover:text-ink hover:bg-canvas-tint"
+            aria-label="Collapse sidebar"
+            title="Collapse sidebar"
+          >
+            <PanelLeftClose className="w-3.5 h-3.5" />
+          </button>
+        )}
       </div>
 
-      <nav className="flex-1 px-2 mt-2 overflow-y-auto">
+      {!forceExpanded && isCollapsed && (
+        <button
+          onClick={() => setCollapsed(false)}
+          className="mx-2 mb-1 p-2 rounded-lg text-ink-faint hover:text-ink hover:bg-canvas-tint flex items-center justify-center"
+          aria-label="Expand sidebar"
+          title="Expand sidebar"
+        >
+          <PanelLeftOpen className="w-4 h-4" />
+        </button>
+      )}
+
+      <nav className={cx('flex-1 overflow-y-auto', isCollapsed ? 'px-2' : 'px-2 mt-2')}>
         {NAV.map(item => (
           <button
             key={item.id}
             onClick={() => onNavigate(item.id)}
+            title={isCollapsed ? item.label : undefined}
             className={cx(
-              'w-full flex items-center gap-2.5 px-3 py-2 my-0.5 rounded-lg text-sm transition-colors',
+              'w-full flex items-center my-0.5 rounded-lg text-sm transition-colors',
+              isCollapsed ? 'h-9 justify-center' : 'gap-2.5 px-3 py-2',
               current === item.id ? 'bg-ink text-white' : 'text-ink-mute hover:text-ink hover:bg-[#f3f4f7]',
             )}
           >
             <span className={current === item.id ? 'text-white' : 'text-ink-faint'}>{item.icon}</span>
-            <span className="truncate">{item.label}</span>
+            {!isCollapsed && <span className="truncate">{item.label}</span>}
           </button>
         ))}
       </nav>
 
-      <ClientSwitcher />
+      <ClientSwitcher collapsed={isCollapsed} />
     </aside>
   )
 }
 
-function ClientSwitcher() {
+function ClientSwitcher({ collapsed }: { collapsed: boolean }) {
   const { currentClient, clients, switchClient, addClient } = useStore()
   const [open, setOpen] = useState(false)
   const [adding, setAdding] = useState(false)
@@ -75,27 +119,38 @@ function ClientSwitcher() {
   const [marketplace, setMarketplace] = useState<Marketplace>('US')
 
   return (
-    <div className="border-t border-line p-3 relative">
+    <div className={cx('border-t border-line relative', collapsed ? 'p-2' : 'p-3')}>
       <button
         onClick={() => { setOpen(o => !o); setAdding(false) }}
-        className="w-full flex items-center gap-2 px-2 py-2 rounded-lg hover:bg-[#f3f4f7]"
+        className={cx(
+          'w-full flex items-center rounded-lg hover:bg-[#f3f4f7]',
+          collapsed ? 'p-1.5 justify-center' : 'gap-2 px-2 py-2',
+        )}
+        title={collapsed && currentClient ? currentClient.name : undefined}
       >
-        <span className="w-7 h-7 rounded-md bg-ink text-white text-xs font-semibold flex items-center justify-center">
+        <span className="w-7 h-7 rounded-md bg-ink text-white text-xs font-semibold flex items-center justify-center shrink-0">
           {currentClient ? currentClient.name.trim().slice(0, 2).toUpperCase() : '—'}
         </span>
-        <span className="flex-1 text-left">
-          <span className="block text-sm font-medium text-ink truncate leading-tight">
-            {currentClient ? currentClient.name : 'No client'}
-          </span>
-          <span className="block text-2xs text-ink-faint leading-tight">
-            {currentClient ? `${currentClient.marketplace} · ${currentClient.currency}` : 'Add one to begin'}
-          </span>
-        </span>
-        <ChevronsUpDown className="w-4 h-4 text-ink-faint" />
+        {!collapsed && (
+          <>
+            <span className="flex-1 text-left min-w-0">
+              <span className="block text-sm font-medium text-ink truncate leading-tight">
+                {currentClient ? currentClient.name : 'No client'}
+              </span>
+              <span className="block text-2xs text-ink-faint leading-tight">
+                {currentClient ? `${currentClient.marketplace} · ${currentClient.currency}` : 'Add one to begin'}
+              </span>
+            </span>
+            <ChevronsUpDown className="w-4 h-4 text-ink-faint" />
+          </>
+        )}
       </button>
 
       {open && (
-        <div className="absolute bottom-full left-3 right-3 mb-2 rounded-xl border border-line bg-canvas-panel shadow-pop overflow-hidden">
+        <div className={cx(
+          'absolute bottom-full mb-2 rounded-xl border border-line bg-canvas-panel shadow-pop overflow-hidden z-30',
+          collapsed ? 'left-2 right-auto w-64' : 'left-3 right-3',
+        )}>
           <div className="max-h-60 overflow-y-auto">
             {clients.length === 0 && (
               <div className="px-3 py-3 text-xs text-ink-mute">No clients yet.</div>
@@ -194,6 +249,6 @@ function currencyFor(m: Marketplace): import('../types').Currency {
   }
 }
 
-// Silence unused import warnings for icons we re-export indirectly.
+// Silence unused import warning.
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 const _u = Trash2
