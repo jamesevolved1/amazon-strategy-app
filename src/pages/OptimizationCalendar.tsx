@@ -1,6 +1,7 @@
 import React, { useMemo, useState } from 'react'
 import {
   Calendar, Check, ChevronDown, ChevronRight, Plus, Sparkles, Trash2, X, Activity, Eraser, History,
+  Rocket, StickyNote,
 } from 'lucide-react'
 import { Panel, Pill, EmptyState, TextField, Button, cx, SegmentedControl } from '../components/ui'
 import { useStore } from '../lib/store'
@@ -16,7 +17,8 @@ type View = 'today' | 'coverage' | 'client'
 export function OptimizationCalendar() {
   const {
     state, clients, currentClient,
-    addTaskFor, addTasksFor, toggleTaskFor, deleteTaskFor, clearPlaybookFor,
+    addTaskFor, addTasksFor, updateTaskFor, toggleTaskFor, deleteTaskFor, clearPlaybookFor,
+    setClientLaunch,
   } = useStore()
   const [view, setView] = useState<View>('today')
   const [focusClientId, setFocusClientId] = useState<string | null>(currentClient?.id ?? null)
@@ -47,7 +49,15 @@ export function OptimizationCalendar() {
         />
       </header>
 
-      {view === 'today' && <TodayView state={state} clients={clients} onToggle={toggleTaskFor} onDelete={deleteTaskFor} />}
+      {view === 'today' && (
+        <TodayView
+          state={state}
+          clients={clients}
+          onToggle={toggleTaskFor}
+          onDelete={deleteTaskFor}
+          onUpdate={updateTaskFor}
+        />
+      )}
 
       {view === 'coverage' && (
         <CoverageGrid
@@ -68,6 +78,8 @@ export function OptimizationCalendar() {
           onToggle={toggleTaskFor}
           onDelete={deleteTaskFor}
           onAdd={addTaskFor}
+          onUpdate={updateTaskFor}
+          onLaunchToggle={setClientLaunch}
         />
       )}
 
@@ -79,19 +91,23 @@ export function OptimizationCalendar() {
 // ---------- Today across clients ----------
 
 function TodayView({
-  state, clients, onToggle, onDelete,
+  state, clients, onToggle, onDelete, onUpdate,
 }: {
   state: ReturnType<typeof useStore>['state']
   clients: Client[]
   onToggle: (clientId: string, taskId: string) => void
   onDelete: (clientId: string, taskId: string) => void
+  onUpdate: (clientId: string, taskId: string, patch: Partial<OptimizationTask>) => void
 }) {
   const today = todayIso()
+  const [expandedDone, setExpandedDone] = useState<Set<string>>(new Set())
 
   const dueByClient = useMemo(() => {
     return clients.map(c => {
       const bundle = state.bundles[c.id]
-      const tasks = bundle?.optimization ?? []
+      const allTasks = bundle?.optimization ?? []
+      // Daily tasks only count when the client is in an active product launch.
+      const tasks = allTasks.filter(t => t.cadence !== 'daily' || c.inLaunch)
       const todayTasks = tasks.filter(t => !t.completed && t.due <= today)
       const overdue = todayTasks.filter(t => t.due < today)
       const dueToday = todayTasks.filter(t => t.due === today)
@@ -102,6 +118,7 @@ function TodayView({
 
   const totalDue = dueByClient.reduce((n, x) => n + x.dueToday.length + x.overdue.length, 0)
   const totalDone = dueByClient.reduce((n, x) => n + x.completedToday.length, 0)
+  const inLaunchCount = clients.filter(c => c.inLaunch).length
 
   return (
     <div className="space-y-4">
@@ -116,13 +133,22 @@ function TodayView({
               <div className="text-xs text-ink-mute mt-0.5">
                 {totalDue === 0
                   ? 'Inbox zero — every account is current.'
-                  : `${totalDue} task${totalDue === 1 ? '' : 's'} open across ${dueByClient.filter(x => x.dueToday.length + x.overdue.length > 0).length} client${dueByClient.filter(x => x.dueToday.length + x.overdue.length > 0).length === 1 ? '' : 's'}. ${totalDone} done so far today.`}
+                  : `${totalDue} task${totalDue === 1 ? '' : 's'} open across ${dueByClient.filter(x => x.dueToday.length + x.overdue.length > 0).length} client${dueByClient.filter(x => x.dueToday.length + x.overdue.length > 0).length === 1 ? '' : 's'}.`}
+                {totalDone > 0 && <span className="ml-1 text-ink-faint">{totalDone} done so far today.</span>}
               </div>
             </div>
           </div>
-          <Pill tone={totalDue === 0 ? 'mint' : totalDue > 15 ? 'blush' : 'gold'}>
-            {totalDue === 0 ? 'All clear' : `${totalDue} open`}
-          </Pill>
+          <div className="flex items-center gap-2">
+            {inLaunchCount > 0 && (
+              <Pill tone="gold">
+                <Rocket className="w-3 h-3" />
+                {inLaunchCount} in launch
+              </Pill>
+            )}
+            <Pill tone={totalDue === 0 ? 'mint' : totalDue > 15 ? 'blush' : 'gold'}>
+              {totalDue === 0 ? 'All clear' : `${totalDue} open`}
+            </Pill>
+          </div>
         </div>
       </Panel>
 
@@ -130,6 +156,7 @@ function TodayView({
 
       {dueByClient.map(({ client, dueToday, overdue, completedToday }) => {
         const total = dueToday.length + overdue.length
+        const doneExpanded = expandedDone.has(client.id)
         if (total === 0 && completedToday.length === 0) {
           return (
             <Panel key={client.id} padding="p-3" className="flex items-center justify-between">
@@ -138,6 +165,7 @@ function TodayView({
                   {client.name.trim().slice(0, 2).toUpperCase()}
                 </span>
                 <span className="text-sm text-ink-mute">{client.name}</span>
+                {client.inLaunch && <Pill tone="gold"><Rocket className="w-3 h-3" />In launch</Pill>}
               </div>
               <Pill tone="mute">No tasks today</Pill>
             </Panel>
@@ -151,21 +179,64 @@ function TodayView({
                   {client.name.trim().slice(0, 2).toUpperCase()}
                 </span>
                 <div>
-                  <div className="text-sm font-semibold text-ink leading-tight">{client.name}</div>
+                  <div className="text-sm font-semibold text-ink leading-tight flex items-center gap-1.5">
+                    {client.name}
+                    {client.inLaunch && <Pill tone="gold"><Rocket className="w-3 h-3" />In launch</Pill>}
+                  </div>
                   <div className="text-2xs text-ink-faint leading-tight">{client.marketplace} · {client.currency}</div>
                 </div>
               </div>
               <div className="flex items-center gap-2">
                 {overdue.length > 0 && <Pill tone="blush">{overdue.length} overdue</Pill>}
                 {dueToday.length > 0 && <Pill tone="peri">{dueToday.length} today</Pill>}
-                {completedToday.length > 0 && <Pill tone="mint">{completedToday.length} done</Pill>}
+                {completedToday.length > 0 && (
+                  <button
+                    onClick={() => setExpandedDone(prev => {
+                      const next = new Set(prev)
+                      if (next.has(client.id)) next.delete(client.id); else next.add(client.id)
+                      return next
+                    })}
+                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-2xs font-medium bg-accent-mintSoft text-[#1f7a4a] hover:bg-accent-mintSoft/80"
+                    aria-label={doneExpanded ? 'Hide completed' : 'Show completed'}
+                  >
+                    {completedToday.length} done
+                    {doneExpanded ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
+                  </button>
+                )}
               </div>
             </div>
             <div className="divide-y divide-line">
               {[...overdue, ...dueToday].map(t => (
-                <TaskRow key={t.id} task={t} client={client} onToggle={() => onToggle(client.id, t.id)} onDelete={() => onDelete(client.id, t.id)} showOverdue />
+                <TaskRow
+                  key={t.id}
+                  task={t}
+                  client={client}
+                  onToggle={() => onToggle(client.id, t.id)}
+                  onDelete={() => onDelete(client.id, t.id)}
+                  onUpdate={(patch) => onUpdate(client.id, t.id, patch)}
+                  showOverdue
+                />
               ))}
             </div>
+            {doneExpanded && completedToday.length > 0 && (
+              <div className="border-t border-line bg-canvas-tint">
+                <div className="px-5 py-2 text-2xs uppercase tracking-wider font-semibold text-ink-mute">
+                  Completed today · {completedToday.length}
+                </div>
+                <div className="divide-y divide-line">
+                  {completedToday.map(t => (
+                    <TaskRow
+                      key={t.id}
+                      task={t}
+                      client={client}
+                      onToggle={() => onToggle(client.id, t.id)}
+                      onDelete={() => onDelete(client.id, t.id)}
+                      onUpdate={(patch) => onUpdate(client.id, t.id, patch)}
+                    />
+                  ))}
+                </div>
+              </div>
+            )}
           </Panel>
         )
       })}
@@ -203,15 +274,18 @@ function CoverageGrid({
           <tbody>
             {clients.map(c => {
               const tasks = state.bundles[c.id]?.optimization ?? []
-              const rows = cadences.map(cad => ({ cad, stat: scoreCoverage(tasks, cad, today) }))
-              const totalExpected = rows.reduce((n, r) => n + r.stat.completed + r.stat.open + r.stat.overdue, 0)
-              const totalDone = rows.reduce((n, r) => n + r.stat.completed, 0)
+              const rows = cadences.map(cad => {
+                if (cad === 'daily' && !c.inLaunch) return { cad, stat: null }
+                return { cad, stat: scoreCoverage(tasks, cad, today) }
+              })
+              const totalExpected = rows.reduce((n, r) => n + (r.stat?.completed ?? 0) + (r.stat?.open ?? 0) + (r.stat?.overdue ?? 0), 0)
+              const totalDone = rows.reduce((n, r) => n + (r.stat?.completed ?? 0), 0)
               const overall = totalExpected > 0 ? Math.round((totalDone / totalExpected) * 100) : null
               const playbookSeeded = tasks.some(t => t.templateKey)
               return (
                 <tr key={c.id} className="border-t border-line hover:bg-canvas-tint cursor-pointer" onClick={() => onFocusClient(c.id)}>
                   <td className="px-5 py-3">
-                    <div className="flex items-center gap-2.5">
+                    <div className="flex items-center gap-2.5 flex-wrap">
                       <span className="w-7 h-7 rounded-md bg-[#eef0f4] text-ink text-xs font-semibold flex items-center justify-center">
                         {c.name.trim().slice(0, 2).toUpperCase()}
                       </span>
@@ -219,10 +293,15 @@ function CoverageGrid({
                         <div className="text-sm font-medium text-ink leading-tight">{c.name}</div>
                         <div className="text-2xs text-ink-faint leading-tight">{c.marketplace} · {c.currency}</div>
                       </div>
+                      {c.inLaunch && <Pill tone="gold"><Rocket className="w-3 h-3" />Launch</Pill>}
                       {!playbookSeeded && <Pill tone="mute">No playbook</Pill>}
                     </div>
                   </td>
-                  {rows.map(r => <CoverageCell key={r.cad} stat={r.stat} />)}
+                  {rows.map(r => r.stat === null ? (
+                    <td key={r.cad} className="px-3 py-3 text-center">
+                      <span className="text-2xs text-ink-faint italic" title="Daily tasks only run during product launches">not in launch</span>
+                    </td>
+                  ) : <CoverageCell key={r.cad} stat={r.stat} />)}
                   <td className="px-5 py-3 text-right">
                     {overall == null
                       ? <span className="text-2xs text-ink-faint">—</span>
@@ -264,7 +343,7 @@ function CoverageCell({ stat }: { stat: { completed: number; open: number; overd
 // ---------- Per-client playbook ----------
 
 function ClientPlaybook({
-  state, clients, focusClientId, setFocusClientId, onSeed, onClear, onToggle, onDelete, onAdd,
+  state, clients, focusClientId, setFocusClientId, onSeed, onClear, onToggle, onDelete, onAdd, onUpdate, onLaunchToggle,
 }: {
   state: ReturnType<typeof useStore>['state']
   clients: Client[]
@@ -275,6 +354,8 @@ function ClientPlaybook({
   onToggle: (clientId: string, taskId: string) => void
   onDelete: (clientId: string, taskId: string) => void
   onAdd: (clientId: string, t: Omit<OptimizationTask, 'id' | 'createdAt' | 'clientId'>) => OptimizationTask | null
+  onUpdate: (clientId: string, taskId: string, patch: Partial<OptimizationTask>) => void
+  onLaunchToggle: (clientId: string, inLaunch: boolean, launchSku?: string) => void
 }) {
   const focusClient = focusClientId ? clients.find(c => c.id === focusClientId) ?? clients[0] : clients[0]
   const bundle: ClientBundle | undefined = focusClient ? state.bundles[focusClient.id] : undefined
@@ -288,8 +369,9 @@ function ClientPlaybook({
     let rows = tasks.slice()
     if (filter !== 'all') rows = rows.filter(t => t.cadence === filter)
     if (!showCompleted) rows = rows.filter(t => !t.completed)
+    if (focusClient && !focusClient.inLaunch) rows = rows.filter(t => t.cadence !== 'daily')
     return rows.sort((a, b) => a.due.localeCompare(b.due))
-  }, [tasks, filter, showCompleted])
+  }, [tasks, filter, showCompleted, focusClient])
 
   const byCadence = useMemo(() => {
     const m = new Map<OptCadence, OptimizationTask[]>()
@@ -323,6 +405,7 @@ function ClientPlaybook({
           <div className="flex items-center gap-2 flex-wrap">
             {focusClient && (
               <>
+                <LaunchToggle client={focusClient} onChange={(inLaunch, sku) => onLaunchToggle(focusClient.id, inLaunch, sku)} />
                 <Button
                   icon={<Sparkles className="w-4 h-4" />}
                   onClick={() => {
@@ -392,6 +475,15 @@ function ClientPlaybook({
         </Panel>
       )}
 
+      {focusClient && !focusClient.inLaunch && (filter === 'all' || filter === 'daily') && tasks.some(t => t.cadence === 'daily') && (
+        <Panel padding="p-3" className="bg-canvas-tint">
+          <div className="flex items-center gap-2 text-xs text-ink-mute">
+            <Rocket className="w-3.5 h-3.5" />
+            <span><span className="text-ink font-medium">{tasks.filter(t => t.cadence === 'daily').length} daily tasks hidden</span> · {focusClient.name} isn't in a product launch. Flip "In product launch" on above to show them.</span>
+          </div>
+        </Panel>
+      )}
+
       {CADENCE_ORDER.map(cad => {
         if (filter !== 'all' && filter !== cad) return null
         const rows = byCadence.get(cad) ?? []
@@ -404,6 +496,7 @@ function ClientPlaybook({
             client={focusClient!}
             onToggle={(taskId) => onToggle(focusClient!.id, taskId)}
             onDelete={(taskId) => onDelete(focusClient!.id, taskId)}
+            onUpdate={(taskId, patch) => onUpdate(focusClient!.id, taskId, patch)}
           />
         )
       })}
@@ -414,13 +507,14 @@ function ClientPlaybook({
 }
 
 function CadenceSection({
-  cadence, tasks, client, onToggle, onDelete,
+  cadence, tasks, client, onToggle, onDelete, onUpdate,
 }: {
   cadence: OptCadence
   tasks: OptimizationTask[]
   client: Client
   onToggle: (taskId: string) => void
   onDelete: (taskId: string) => void
+  onUpdate: (taskId: string, patch: Partial<OptimizationTask>) => void
 }) {
   const [collapsed, setCollapsed] = useState(false)
   const byCategory = useMemo(() => {
@@ -459,7 +553,14 @@ function CadenceSection({
                 </div>
                 <div>
                   {rows.map(t => (
-                    <TaskRow key={t.id} task={t} client={client} onToggle={() => onToggle(t.id)} onDelete={() => onDelete(t.id)} />
+                    <TaskRow
+                      key={t.id}
+                      task={t}
+                      client={client}
+                      onToggle={() => onToggle(t.id)}
+                      onDelete={() => onDelete(t.id)}
+                      onUpdate={(patch) => onUpdate(t.id, patch)}
+                    />
                   ))}
                 </div>
               </div>
@@ -484,16 +585,21 @@ function stripeBg(tone: 'peri' | 'lavender' | 'mint' | 'gold' | 'blush'): string
 // ---------- Task row ----------
 
 function TaskRow({
-  task, client, onToggle, onDelete, showOverdue,
+  task, client, onToggle, onDelete, onUpdate, showOverdue,
 }: {
   task: OptimizationTask
   client: Client
   onToggle: () => void
   onDelete: () => void
+  onUpdate: (patch: Partial<OptimizationTask>) => void
   showOverdue?: boolean
 }) {
   const tone = task.category ? CATEGORY_TONE[task.category as OptCategory] : 'lavender'
   const overdue = !task.completed && task.due < todayIso()
+  const hasNotes = Boolean(task.notes && task.notes.trim().length > 0)
+  const [notesOpen, setNotesOpen] = useState(false)
+  const [notesDraft, setNotesDraft] = useState(task.notes ?? '')
+
   return (
     <div className="px-5 py-2.5 flex items-start gap-3 hover:bg-canvas-tint">
       <button
@@ -521,7 +627,59 @@ function TaskRow({
           {showOverdue && overdue && <Pill tone="blush">overdue</Pill>}
           {task.completedAt && <span className="text-ink-faint">· done {timestamp(task.completedAt)}</span>}
         </div>
+        {notesOpen && (
+          <div className="mt-2">
+            <textarea
+              autoFocus
+              value={notesDraft}
+              onChange={e => setNotesDraft(e.target.value)}
+              onBlur={() => {
+                if ((notesDraft ?? '') !== (task.notes ?? '')) onUpdate({ notes: notesDraft })
+                if (!notesDraft.trim()) setNotesOpen(false)
+              }}
+              rows={3}
+              placeholder="What did you find? What got changed? Anything to remember for next week?"
+              className="w-full text-xs rounded-md border border-line bg-canvas-panel px-2.5 py-1.5 focus:outline-none focus:ring-2 focus:ring-ink/15 resize-y"
+            />
+            <div className="mt-1 flex items-center gap-2 text-2xs text-ink-faint">
+              <button
+                onClick={() => {
+                  setNotesDraft('')
+                  onUpdate({ notes: undefined })
+                  setNotesOpen(false)
+                }}
+                className="hover:text-[#9c4651]"
+              >
+                Clear notes
+              </button>
+              <span>·</span>
+              <button onClick={() => setNotesOpen(false)} className="hover:text-ink">Done</button>
+            </div>
+          </div>
+        )}
+        {!notesOpen && hasNotes && (
+          <button
+            onClick={() => setNotesOpen(true)}
+            className="mt-1.5 text-2xs text-ink-mute hover:text-ink flex items-start gap-1.5 text-left"
+          >
+            <StickyNote className="w-3 h-3 mt-0.5 shrink-0 text-accent-gold" />
+            <span className="line-clamp-2 italic">{task.notes}</span>
+          </button>
+        )}
       </div>
+      {!notesOpen && (
+        <button
+          onClick={() => setNotesOpen(true)}
+          className={cx(
+            'mt-0.5 p-1 rounded hover:bg-canvas-panel transition-colors',
+            hasNotes ? 'text-accent-gold' : 'text-ink-faint hover:text-ink',
+          )}
+          aria-label={hasNotes ? 'Edit notes' : 'Add notes'}
+          title={hasNotes ? 'Edit notes' : 'Add notes'}
+        >
+          <StickyNote className="w-3.5 h-3.5" />
+        </button>
+      )}
       <button
         onClick={onDelete}
         className="text-ink-faint hover:text-[#9c4651] mt-0.5"
@@ -529,6 +687,49 @@ function TaskRow({
       >
         <Trash2 className="w-3.5 h-3.5" />
       </button>
+    </div>
+  )
+}
+
+function LaunchToggle({ client, onChange }: { client: Client; onChange: (inLaunch: boolean, sku?: string) => void }) {
+  const [editingSku, setEditingSku] = useState(false)
+  const [skuDraft, setSkuDraft] = useState(client.launchSku ?? '')
+
+  return (
+    <div className={cx(
+      'flex items-center gap-2 rounded-full border pl-3 pr-1 py-1 transition-colors',
+      client.inLaunch ? 'border-accent-gold/40 bg-accent-goldSoft/50' : 'border-line bg-canvas-panel',
+    )}>
+      <button
+        type="button"
+        onClick={() => onChange(!client.inLaunch, client.launchSku)}
+        className="flex items-center gap-1.5 text-xs font-medium"
+        title={client.inLaunch ? 'Click to end launch — hides daily tasks' : 'Click to mark this client as in product launch — daily tasks appear'}
+      >
+        <Rocket className={cx('w-3.5 h-3.5', client.inLaunch ? 'text-[#8b6a18]' : 'text-ink-mute')} />
+        <span className={client.inLaunch ? 'text-[#8b6a18]' : 'text-ink-mute'}>
+          {client.inLaunch ? 'In launch' : 'Not in launch'}
+        </span>
+      </button>
+      {client.inLaunch && (editingSku ? (
+        <input
+          autoFocus
+          value={skuDraft}
+          onChange={e => setSkuDraft(e.target.value)}
+          onBlur={() => { onChange(true, skuDraft.trim() || undefined); setEditingSku(false) }}
+          onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur() }}
+          placeholder="Launch SKU"
+          className="w-28 px-2 py-0.5 rounded-full bg-canvas-panel border border-line text-2xs focus:outline-none focus:ring-2 focus:ring-ink/15"
+        />
+      ) : (
+        <button
+          onClick={() => { setSkuDraft(client.launchSku ?? ''); setEditingSku(true) }}
+          className="px-2 py-0.5 rounded-full bg-canvas-panel border border-line text-2xs text-ink-mute hover:text-ink hover:border-ink/40"
+          title="Set the SKU/ASIN being launched"
+        >
+          {client.launchSku ?? 'add SKU'}
+        </button>
+      ))}
     </div>
   )
 }
@@ -612,6 +813,7 @@ function AddTaskInline({
 // ---------- Completion log ----------
 
 function CompletionLog({ state }: { state: ReturnType<typeof useStore>['state'] }) {
+  const [open, setOpen] = useState(false)
   const log = useMemo(() => {
     const all: Array<{ task: OptimizationTask; clientName: string }> = []
     for (const id of state.clientOrder) {
@@ -626,34 +828,47 @@ function CompletionLog({ state }: { state: ReturnType<typeof useStore>['state'] 
 
   if (log.length === 0) return null
 
+  const today = todayIso()
+  const todayCount = log.filter(l => (l.task.completedAt ?? '').slice(0, 10) === today).length
+
   return (
     <Panel padding="p-0" className="overflow-hidden">
-      <div className="px-5 py-3 flex items-center justify-between border-b border-line">
+      <button
+        onClick={() => setOpen(o => !o)}
+        className="w-full px-5 py-3 flex items-center justify-between hover:bg-canvas-tint"
+      >
         <div className="flex items-center gap-2">
+          {open ? <ChevronDown className="w-4 h-4 text-ink-faint" /> : <ChevronRight className="w-4 h-4 text-ink-faint" />}
           <History className="w-4 h-4 text-ink-mute" />
-          <h2 className="text-sm font-semibold text-ink">Recent completions</h2>
+          <span className="text-sm font-medium text-ink">Recently completed</span>
           <Pill tone="mute">{log.length}</Pill>
+          {todayCount > 0 && <Pill tone="mint">{todayCount} today</Pill>}
         </div>
         <span className="text-2xs text-ink-faint">Across all clients</span>
-      </div>
-      <div className="divide-y divide-line">
-        {log.slice(0, 25).map(({ task, clientName }) => (
-          <div key={task.id} className="px-5 py-2.5 flex items-start justify-between gap-3">
-            <div className="flex items-start gap-2.5 min-w-0">
-              <Check className="w-3.5 h-3.5 text-[#1f7a4a] mt-0.5 shrink-0" />
-              <div className="min-w-0">
-                <div className="text-sm text-ink truncate">{task.title}</div>
-                <div className="text-2xs text-ink-faint mt-0.5 flex items-center gap-1.5 flex-wrap">
-                  <span>{clientName}</span>
-                  {task.category && <Pill tone={CATEGORY_TONE[task.category as OptCategory]}>{CATEGORY_LABEL[task.category as OptCategory]}</Pill>}
-                  {task.cadence && task.cadence !== 'oneoff' && <Pill tone="mute">{CADENCE_LABEL[task.cadence]}</Pill>}
+      </button>
+      {open && (
+        <div className="divide-y divide-line border-t border-line">
+          {log.slice(0, 25).map(({ task, clientName }) => (
+            <div key={task.id} className="px-5 py-2.5 flex items-start justify-between gap-3">
+              <div className="flex items-start gap-2.5 min-w-0">
+                <Check className="w-3.5 h-3.5 text-[#1f7a4a] mt-0.5 shrink-0" />
+                <div className="min-w-0">
+                  <div className="text-sm text-ink truncate">{task.title}</div>
+                  {task.notes && (
+                    <div className="text-2xs text-ink-mute mt-0.5 italic line-clamp-2">{task.notes}</div>
+                  )}
+                  <div className="text-2xs text-ink-faint mt-0.5 flex items-center gap-1.5 flex-wrap">
+                    <span>{clientName}</span>
+                    {task.category && <Pill tone={CATEGORY_TONE[task.category as OptCategory]}>{CATEGORY_LABEL[task.category as OptCategory]}</Pill>}
+                    {task.cadence && task.cadence !== 'oneoff' && <Pill tone="mute">{CADENCE_LABEL[task.cadence]}</Pill>}
+                  </div>
                 </div>
               </div>
+              <span className="text-2xs text-ink-faint tnum shrink-0">{timestamp(task.completedAt)}</span>
             </div>
-            <span className="text-2xs text-ink-faint tnum shrink-0">{timestamp(task.completedAt)}</span>
-          </div>
-        ))}
-      </div>
+          ))}
+        </div>
+      )}
     </Panel>
   )
 }

@@ -10,6 +10,9 @@ export interface Client {
   marketplace: Marketplace
   currency: Currency
   createdAt: string
+  inLaunch?: boolean
+  launchSku?: string
+  launchStartedAt?: string
 }
 
 export interface ClientGoals {
@@ -148,6 +151,7 @@ export interface OptimizationTask {
   id: string
   title: string
   detail?: string
+  notes?: string        // running log added by the user while working the task
   due: string           // YYYY-MM-DD
   completed: boolean
   completedAt?: string  // ISO
