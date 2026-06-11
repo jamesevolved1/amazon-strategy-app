@@ -1,5 +1,5 @@
 // Shared primitives: Panel, KPICard, SegmentedControl, Pill, Stat, EmptyState, Toast.
-import React from 'react'
+import React, { useEffect, useState } from 'react'
 import { ArrowDown, ArrowUp, Minus } from 'lucide-react'
 
 export function cx(...parts: Array<string | false | null | undefined>) {
@@ -133,6 +133,71 @@ export function TextField({
       </div>
     </label>
   )
+}
+
+/**
+ * Numeric input that lets the field go truly empty. Tracks a local draft
+ * string so the user can clear it without the parent re-coercing to "0".
+ * Emits 0 when the field is empty, otherwise the parsed number.
+ */
+export function NumberField({
+  label, value, onChange, prefix, suffix, step, placeholder, className,
+}: {
+  label?: string
+  value: number
+  onChange: (v: number) => void
+  prefix?: string
+  suffix?: string
+  step?: string
+  placeholder?: string
+  className?: string
+}) {
+  const [draft, setDraft] = useState<string>(() => initialDraft(value))
+  const [focused, setFocused] = useState(false)
+
+  // Sync from external value when not focused (e.g. reset, programmatic update).
+  useEffect(() => {
+    if (focused) return
+    const parsed = draft === '' ? 0 : Number(draft)
+    if (parsed !== value) setDraft(initialDraft(value))
+  }, [value, focused, draft])
+
+  return (
+    <label className={cx('block', className)}>
+      {label && <span className="block text-xs font-medium text-ink-mute mb-1.5">{label}</span>}
+      <div className="relative">
+        {prefix && <span className="absolute inset-y-0 left-3 flex items-center text-sm text-ink-mute">{prefix}</span>}
+        <input
+          type="number"
+          inputMode="decimal"
+          step={step}
+          value={draft}
+          onFocus={() => setFocused(true)}
+          onBlur={() => setFocused(false)}
+          onChange={e => {
+            const next = e.target.value
+            setDraft(next)
+            if (next === '' || next === '-') { onChange(0); return }
+            const n = Number(next)
+            if (Number.isFinite(n)) onChange(n)
+          }}
+          placeholder={placeholder ?? '0'}
+          className={cx(
+            'w-full rounded-lg border border-line bg-canvas-panel text-sm text-ink',
+            'px-3 py-2 focus:outline-none focus:ring-2 focus:ring-ink/15 focus:border-ink/20',
+            prefix && 'pl-7',
+            suffix && 'pr-9'
+          )}
+        />
+        {suffix && <span className="absolute inset-y-0 right-3 flex items-center text-sm text-ink-mute">{suffix}</span>}
+      </div>
+    </label>
+  )
+}
+
+function initialDraft(v: number): string {
+  if (!Number.isFinite(v) || v === 0) return ''
+  return String(v)
 }
 
 export function Button({

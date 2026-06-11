@@ -1,6 +1,6 @@
 import React, { useMemo, useState } from 'react'
 import { ChevronDown, ChevronUp, Download, Search, Sliders, Wallet, Megaphone, DollarSign, Package, Activity } from 'lucide-react'
-import { Panel, Pill, Button, EmptyState, cx, TextField, SegmentedControl } from '../components/ui'
+import { Panel, Pill, Button, EmptyState, cx, TextField, NumberField, SegmentedControl } from '../components/ui'
 import { KPICard } from '../components/KPICard'
 import { DataQualityWarnings } from '../components/DataQualityWarnings'
 import { useStore } from '../lib/store'
@@ -332,10 +332,10 @@ function ScenarioControls({
       {active ? (
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
           <TextField label="Name" value={active.name} onChange={v => onUpdate(active.id, { name: v })} />
-          <TextField label="Ad spend ×" type="number" step="0.01" value={active.adSpendMultiplier} onChange={v => onUpdate(active.id, { adSpendMultiplier: Number(v) || 0 })} />
-          <TextField label="Price Δ%" type="number" step="0.5" suffix="%" value={active.priceAdjustment} onChange={v => onUpdate(active.id, { priceAdjustment: Number(v) || 0 })} />
-          <TextField label="COGS Δ%" type="number" step="0.5" suffix="%" value={active.cogsAdjustment} onChange={v => onUpdate(active.id, { cogsAdjustment: Number(v) || 0 })} />
-          <TextField label="Coupon rate (override)" type="number" step="0.5" suffix="%" value={active.couponRateOverride ?? ''} onChange={v => onUpdate(active.id, { couponRateOverride: v === '' ? null : Number(v) })} />
+          <NumberField label="Ad spend ×" step="0.01" value={active.adSpendMultiplier} onChange={v => onUpdate(active.id, { adSpendMultiplier: v })} />
+          <NumberField label="Price Δ%" step="0.5" suffix="%" value={active.priceAdjustment} onChange={v => onUpdate(active.id, { priceAdjustment: v })} />
+          <NumberField label="COGS Δ%" step="0.5" suffix="%" value={active.cogsAdjustment} onChange={v => onUpdate(active.id, { cogsAdjustment: v })} />
+          <NumberField label="Coupon rate (override)" step="0.5" suffix="%" value={active.couponRateOverride ?? 0} onChange={v => onUpdate(active.id, { couponRateOverride: v === 0 ? null : v })} />
         </div>
       ) : (
         <p className="text-sm text-ink-mute">No active scenario — view shows current data. Create one to model spend, price, or COGS shifts.</p>

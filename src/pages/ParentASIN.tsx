@@ -1,6 +1,6 @@
 import React, { useMemo, useState } from 'react'
 import { ChevronDown, ChevronUp, Download, Search } from 'lucide-react'
-import { Panel, Pill, Button, EmptyState, cx, TextField } from '../components/ui'
+import { Panel, Pill, Button, EmptyState, cx, NumberField } from '../components/ui'
 import { useStore } from '../lib/store'
 import { mergeReportsIntoSkus, statusLabel, statusTone, type MergedReports } from '../utils/pnl'
 import { currency, num, percent } from '../lib/format'
@@ -126,22 +126,20 @@ export function ParentASIN() {
                           <div className="px-5 py-4 grid grid-cols-1 lg:grid-cols-4 gap-5">
                             <div className="lg:col-span-1">
                               <h3 className="text-sm font-semibold text-ink mb-3">Parent targets</h3>
-                              <TextField
+                              <NumberField
                                 label="TACOS target %"
-                                type="number"
                                 step="0.5"
                                 suffix="%"
-                                value={target?.tacos ?? ''}
-                                onChange={v => setParentTargets(prev => ({ ...prev, [p.parentAsin]: { tacos: Number(v) || 0, margin: prev[p.parentAsin]?.margin ?? 25 } }))}
+                                value={target?.tacos ?? 0}
+                                onChange={v => setParentTargets(prev => ({ ...prev, [p.parentAsin]: { tacos: v, margin: prev[p.parentAsin]?.margin ?? 25 } }))}
                               />
                               <div className="h-3" />
-                              <TextField
+                              <NumberField
                                 label="Margin target %"
-                                type="number"
                                 step="0.5"
                                 suffix="%"
-                                value={target?.margin ?? ''}
-                                onChange={v => setParentTargets(prev => ({ ...prev, [p.parentAsin]: { margin: Number(v) || 0, tacos: prev[p.parentAsin]?.tacos ?? 15 } }))}
+                                value={target?.margin ?? 0}
+                                onChange={v => setParentTargets(prev => ({ ...prev, [p.parentAsin]: { margin: v, tacos: prev[p.parentAsin]?.tacos ?? 15 } }))}
                               />
                             </div>
                             <ChildTable parent={p} ccy={currentClient.currency} />

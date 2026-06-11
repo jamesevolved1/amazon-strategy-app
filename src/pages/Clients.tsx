@@ -1,6 +1,6 @@
 import React, { useMemo, useState } from 'react'
 import { Plus, Trash2, Pencil, Check, X } from 'lucide-react'
-import { Panel, Pill, Button, EmptyState, TextField, cx } from '../components/ui'
+import { Panel, Pill, Button, EmptyState, TextField, NumberField, cx } from '../components/ui'
 import { useStore } from '../lib/store'
 import { currency, num, percent } from '../lib/format'
 import { evaluateGoalRealism, totalsFromSeries } from '../utils/pnl'
@@ -153,14 +153,14 @@ export function Clients() {
             )}
           </div>
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
-            <TextField label="Monthly ad budget" type="number" prefix={curSym(currentClient!.currency)} value={currentBundle.goals.monthlyAdBudget} onChange={v => setGoals({ monthlyAdBudget: Number(v) || 0 })} />
-            <TextField label="Primary TACOS goal" type="number" suffix="%" value={currentBundle.goals.primaryTacosGoal} onChange={v => setGoals({ primaryTacosGoal: Number(v) || 0 })} />
-            <TextField label="Acceptable TACOS ceiling" type="number" suffix="%" value={currentBundle.goals.acceptableTacosCeiling} onChange={v => setGoals({ acceptableTacosCeiling: Number(v) || 0 })} />
-            <TextField label="Target ROAS" type="number" step="0.1" suffix="×" value={currentBundle.goals.targetRoas} onChange={v => setGoals({ targetRoas: Number(v) || 0 })} />
-            <TextField label="Minimum acceptable ROAS" type="number" step="0.1" suffix="×" value={currentBundle.goals.minimumAcceptableRoas} onChange={v => setGoals({ minimumAcceptableRoas: Number(v) || 0 })} />
-            <TextField label="Current projected monthly sales" type="number" prefix={curSym(currentClient!.currency)} value={currentBundle.goals.currentProjectedMonthlySales} onChange={v => setGoals({ currentProjectedMonthlySales: Number(v) || 0 })} />
-            <TextField label="Desired next-30-day sales" type="number" prefix={curSym(currentClient!.currency)} value={currentBundle.goals.desiredNext30DaySales} onChange={v => setGoals({ desiredNext30DaySales: Number(v) || 0 })} />
-            <TextField label="Coupon goal" type="number" suffix="%" value={currentBundle.goals.couponGoal} onChange={v => setGoals({ couponGoal: Number(v) || 0 })} />
+            <NumberField label="Monthly ad budget" prefix={curSym(currentClient!.currency)} value={currentBundle.goals.monthlyAdBudget} onChange={v => setGoals({ monthlyAdBudget: v })} />
+            <NumberField label="Primary TACOS goal" suffix="%" value={currentBundle.goals.primaryTacosGoal} onChange={v => setGoals({ primaryTacosGoal: v })} />
+            <NumberField label="Acceptable TACOS ceiling" suffix="%" value={currentBundle.goals.acceptableTacosCeiling} onChange={v => setGoals({ acceptableTacosCeiling: v })} />
+            <NumberField label="Target ROAS" step="0.1" suffix="×" value={currentBundle.goals.targetRoas} onChange={v => setGoals({ targetRoas: v })} />
+            <NumberField label="Minimum acceptable ROAS" step="0.1" suffix="×" value={currentBundle.goals.minimumAcceptableRoas} onChange={v => setGoals({ minimumAcceptableRoas: v })} />
+            <NumberField label="Current projected monthly sales" prefix={curSym(currentClient!.currency)} value={currentBundle.goals.currentProjectedMonthlySales} onChange={v => setGoals({ currentProjectedMonthlySales: v })} />
+            <NumberField label="Desired next-30-day sales" prefix={curSym(currentClient!.currency)} value={currentBundle.goals.desiredNext30DaySales} onChange={v => setGoals({ desiredNext30DaySales: v })} />
+            <NumberField label="Coupon goal" suffix="%" value={currentBundle.goals.couponGoal} onChange={v => setGoals({ couponGoal: v })} />
           </div>
           {realism && (
             <div className="mt-4 rounded-lg border border-line p-3 bg-canvas-tint">

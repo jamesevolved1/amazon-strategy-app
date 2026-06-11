@@ -1,6 +1,6 @@
 import React, { useMemo, useState } from 'react'
 import { ArrowDown, AlertTriangle, CheckCircle2, Target } from 'lucide-react'
-import { Panel, Pill, EmptyState, TextField, cx } from '../components/ui'
+import { Panel, Pill, EmptyState, NumberField, cx } from '../components/ui'
 import { useStore } from '../lib/store'
 import { defaultInputsFromGoals, runFunnel, type FunnelInputs } from '../utils/adPotential'
 import { currency, num, percent } from '../lib/format'
@@ -46,18 +46,18 @@ export function AdPotential() {
           <h2 className="text-base font-semibold text-ink">Inputs</h2>
           <p className="text-xs text-ink-mute mt-1">Target ROAS is a benchmark, never the primary formula.</p>
           <div className="mt-4 space-y-3">
-            <TextField label="Monthly ad budget" type="number" prefix={currencySymbol(currentClient.currency)} value={inputs.budget} onChange={v => setInputs(s => ({ ...s, budget: Number(v) || 0 }))} />
-            <TextField label="Expected CPC" type="number" step="0.05" prefix={currencySymbol(currentClient.currency)} value={inputs.cpc} onChange={v => setInputs(s => ({ ...s, cpc: Number(v) || 0 }))} />
-            <TextField label="Conversion rate" type="number" step="0.1" suffix="%" value={inputs.cvr} onChange={v => setInputs(s => ({ ...s, cvr: Number(v) || 0 }))} />
-            <TextField label="Average order value" type="number" step="0.5" prefix={currencySymbol(currentClient.currency)} value={inputs.aov} onChange={v => setInputs(s => ({ ...s, aov: Number(v) || 0 }))} />
-            <TextField label="Organic lift ratio (paid → organic)" type="number" step="0.05" value={inputs.organicLiftRatio} onChange={v => setInputs(s => ({ ...s, organicLiftRatio: Number(v) || 0 }))} />
+            <NumberField label="Monthly ad budget" prefix={currencySymbol(currentClient.currency)} value={inputs.budget} onChange={v => setInputs(s => ({ ...s, budget: v }))} />
+            <NumberField label="Expected CPC" step="0.05" prefix={currencySymbol(currentClient.currency)} value={inputs.cpc} onChange={v => setInputs(s => ({ ...s, cpc: v }))} />
+            <NumberField label="Conversion rate" step="0.1" suffix="%" value={inputs.cvr} onChange={v => setInputs(s => ({ ...s, cvr: v }))} />
+            <NumberField label="Average order value" step="0.5" prefix={currencySymbol(currentClient.currency)} value={inputs.aov} onChange={v => setInputs(s => ({ ...s, aov: v }))} />
+            <NumberField label="Organic lift ratio (paid → organic)" step="0.05" value={inputs.organicLiftRatio} onChange={v => setInputs(s => ({ ...s, organicLiftRatio: v }))} />
             <div className="grid grid-cols-2 gap-3">
-              <TextField label="Target ROAS (benchmark)" type="number" step="0.1" suffix="×" value={inputs.targetRoas} onChange={v => setInputs(s => ({ ...s, targetRoas: Number(v) || 0 }))} />
-              <TextField label="Min ROAS" type="number" step="0.1" suffix="×" value={inputs.minRoas} onChange={v => setInputs(s => ({ ...s, minRoas: Number(v) || 0 }))} />
+              <NumberField label="Target ROAS (benchmark)" step="0.1" suffix="×" value={inputs.targetRoas} onChange={v => setInputs(s => ({ ...s, targetRoas: v }))} />
+              <NumberField label="Min ROAS" step="0.1" suffix="×" value={inputs.minRoas} onChange={v => setInputs(s => ({ ...s, minRoas: v }))} />
             </div>
             <div className="grid grid-cols-2 gap-3">
-              <TextField label="Primary TACOS goal" type="number" step="0.5" suffix="%" value={inputs.primaryTacos} onChange={v => setInputs(s => ({ ...s, primaryTacos: Number(v) || 0 }))} />
-              <TextField label="TACOS ceiling" type="number" step="0.5" suffix="%" value={inputs.ceilingTacos} onChange={v => setInputs(s => ({ ...s, ceilingTacos: Number(v) || 0 }))} />
+              <NumberField label="Primary TACOS goal" step="0.5" suffix="%" value={inputs.primaryTacos} onChange={v => setInputs(s => ({ ...s, primaryTacos: v }))} />
+              <NumberField label="TACOS ceiling" step="0.5" suffix="%" value={inputs.ceilingTacos} onChange={v => setInputs(s => ({ ...s, ceilingTacos: v }))} />
             </div>
           </div>
         </Panel>
