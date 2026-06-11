@@ -141,6 +141,9 @@ export interface DailySeriesPoint {
   ctr?: number      // %
 }
 
+export type OptCategory = 'bid' | 'campaign' | 'creatives' | 'seo' | 'additional'
+export type OptCadence = 'daily' | 'weekly' | 'biweekly' | 'monthly' | 'quarterly' | 'oneoff'
+
 export interface OptimizationTask {
   id: string
   title: string
@@ -148,7 +151,9 @@ export interface OptimizationTask {
   due: string           // YYYY-MM-DD
   completed: boolean
   completedAt?: string  // ISO
-  category?: string
+  category?: OptCategory | string
+  cadence?: OptCadence
+  templateKey?: string  // links back to a Sophie Society playbook template
   clientId: string
   createdAt: string
 }

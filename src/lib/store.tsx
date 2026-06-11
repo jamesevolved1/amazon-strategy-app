@@ -119,6 +119,13 @@ interface StoreCtx {
   updateTask: (id: string, patch: Partial<OptimizationTask>) => void
   toggleTask: (id: string) => void
   deleteTask: (id: string) => void
+
+  // cross-client optimization helpers
+  addTaskFor: (clientId: string, t: Omit<OptimizationTask, 'id' | 'createdAt' | 'clientId'>) => OptimizationTask | null
+  addTasksFor: (clientId: string, tasks: OptimizationTask[]) => void
+  toggleTaskFor: (clientId: string, id: string) => void
+  deleteTaskFor: (clientId: string, id: string) => void
+  clearPlaybookFor: (clientId: string) => void
 }
 
 const Ctx = createContext<StoreCtx | null>(null)
@@ -280,6 +287,48 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     updateBundle(b => ({ ...b, optimization: b.optimization.filter(t => t.id !== id) }))
   }, [updateBundle])
 
+  const updateBundleFor = useCallback((clientId: string, fn: (b: ClientBundle) => ClientBundle) => {
+    setState(prev => {
+      const existing = prev.bundles[clientId]
+      if (!existing) return prev
+      return { ...prev, bundles: { ...prev.bundles, [clientId]: fn(existing) } }
+    })
+  }, [])
+
+  const addTaskFor: StoreCtx['addTaskFor'] = useCallback((clientId, t) => {
+    if (!state.bundles[clientId]) return null
+    const task: OptimizationTask = { ...t, id: cryptoRandomId(), createdAt: new Date().toISOString(), clientId }
+    updateBundleFor(clientId, b => ({ ...b, optimization: [task, ...b.optimization] }))
+    return task
+  }, [state.bundles, updateBundleFor])
+
+  const addTasksFor: StoreCtx['addTasksFor'] = useCallback((clientId, tasks) => {
+    updateBundleFor(clientId, b => {
+      const existingKeys = new Set(b.optimization.map(t => t.templateKey).filter(Boolean))
+      const fresh = tasks.filter(t => !t.templateKey || !existingKeys.has(t.templateKey))
+      return { ...b, optimization: [...fresh, ...b.optimization] }
+    })
+  }, [updateBundleFor])
+
+  const toggleTaskFor: StoreCtx['toggleTaskFor'] = useCallback((clientId, id) => {
+    updateBundleFor(clientId, b => ({
+      ...b,
+      optimization: b.optimization.map(t => {
+        if (t.id !== id) return t
+        const completed = !t.completed
+        return { ...t, completed, completedAt: completed ? new Date().toISOString() : undefined }
+      }),
+    }))
+  }, [updateBundleFor])
+
+  const deleteTaskFor: StoreCtx['deleteTaskFor'] = useCallback((clientId, id) => {
+    updateBundleFor(clientId, b => ({ ...b, optimization: b.optimization.filter(t => t.id !== id) }))
+  }, [updateBundleFor])
+
+  const clearPlaybookFor: StoreCtx['clearPlaybookFor'] = useCallback((clientId) => {
+    updateBundleFor(clientId, b => ({ ...b, optimization: b.optimization.filter(t => !t.templateKey) }))
+  }, [updateBundleFor])
+
   const ctx = useMemo<StoreCtx>(() => ({
     state, currentClient, currentBundle, clients,
     supabaseConfigured: isSupabaseConfigured(),
@@ -288,12 +337,14 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     addScenario, updateScenario, deleteScenario, setActiveScenario,
     setReport, clearReport, clearAllReports,
     addTask, updateTask, toggleTask, deleteTask,
+    addTaskFor, addTasksFor, toggleTaskFor, deleteTaskFor, clearPlaybookFor,
   }), [state, currentClient, currentBundle, clients,
        addClient, renameClient, deleteClient, switchClient,
        setGoals,
        addScenario, updateScenario, deleteScenario, setActiveScenario,
        setReport, clearReport, clearAllReports,
-       addTask, updateTask, toggleTask, deleteTask])
+       addTask, updateTask, toggleTask, deleteTask,
+       addTaskFor, addTasksFor, toggleTaskFor, deleteTaskFor, clearPlaybookFor])
 
   return <Ctx.Provider value={ctx}>{children}</Ctx.Provider>
 }
