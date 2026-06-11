@@ -65,7 +65,7 @@ function Shell() {
   }, [])
 
   return (
-    <div className="min-h-screen flex bg-canvas">
+    <div className="min-h-screen flex items-start bg-canvas">
       {/* Mobile top bar */}
       <div className="lg:hidden fixed inset-x-0 top-0 z-40 h-12 bg-canvas-panel border-b border-line px-4 flex items-center justify-between">
         <button
@@ -83,8 +83,8 @@ function Shell() {
         <div className="w-7" />
       </div>
 
-      {/* Desktop sidebar */}
-      <div className="hidden lg:block">
+      {/* Desktop sidebar — sticky wrapper so it stays in view as the page scrolls. */}
+      <div className="hidden lg:block sticky top-0 self-start h-screen z-20">
         <Sidebar current={page} onNavigate={setPage} />
       </div>
 

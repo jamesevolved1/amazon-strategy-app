@@ -80,6 +80,21 @@ export async function parseBulkCampaigns(file: File): Promise<ParseResult<BulkCa
   const campaigns: CampaignRow[] = []
   const dailyMap = new Map<string, DailySeriesPoint>()
 
+  // Amazon's bulk export ships a separate "Portfolios" sheet that maps
+  // Portfolio ID -> Portfolio Name. Campaign rows usually reference the ID
+  // only, so we build the lookup up front and use it as a fallback when the
+  // campaign row itself doesn't carry the name.
+  const portfolioIdToName = new Map<string, string>()
+  const portfolioWs = findSheet(wb, ['Portfolios', 'Portfolio', 'SP Portfolios', 'Sponsored Products Portfolios'])
+  if (portfolioWs) {
+    const rows = sheetToJson(portfolioWs)
+    for (const r of rows) {
+      const id = toStr(pick(r, ['Portfolio ID', 'PortfolioId', 'Portfolio Id']))
+      const name = toStr(pick(r, ['Portfolio Name', 'Portfolio Name (Informational only)', 'Name', 'Portfolio']))
+      if (id && name) portfolioIdToName.set(id, name)
+    }
+  }
+
   for (const tab of BULK_TAB_TO_TYPE) {
     const ws = findSheet(wb, tab.name)
     if (!ws) continue
@@ -96,8 +111,14 @@ export async function parseBulkCampaigns(file: File): Promise<ParseResult<BulkCa
 
       const campaignId = toStr(pick(r, ['Campaign ID', 'CampaignId']))
       const state = (toStr(pick(r, ['State', 'Campaign State'])).toLowerCase() as 'enabled' | 'paused' | 'archived') || undefined
-      const portfolio = toStr(pick(r, ['Portfolio Name', 'Portfolio', 'Portfolio Name (Informational only)']))
-      const portfolioId = toStr(pick(r, ['Portfolio ID', 'PortfolioId']))
+      const rawName = toStr(pick(r, ['Portfolio Name', 'Portfolio', 'Portfolio Name (Informational only)']))
+      const portfolioId = toStr(pick(r, ['Portfolio ID', 'PortfolioId', 'Portfolio Id']))
+      // Resolve the name from the Portfolios sheet when only the ID is on
+      // the campaign row (Amazon's default). Fall back to the ID itself so
+      // every unique portfolio is distinguishable in the UI even without
+      // a name match.
+      const resolved = rawName || (portfolioId ? portfolioIdToName.get(portfolioId) : '')
+      const portfolio = resolved || (portfolioId ? `Portfolio ${portfolioId}` : '')
       const impressions = toNumber(pick(r, ['Impressions']))
       const clicks = toNumber(pick(r, ['Clicks']))
       const spend = toNumber(pick(r, ['Spend', 'Cost']))
