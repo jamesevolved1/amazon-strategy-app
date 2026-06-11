@@ -1,0 +1,71 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: light;
+}
+
+html, body, #root {
+  height: 100%;
+}
+
+body {
+  font-family: 'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11', 'ss01';
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  background: #f6f7f9;
+  color: #0f1115;
+}
+
+* {
+  -webkit-tap-highlight-color: transparent;
+}
+
+button, [role="button"] {
+  cursor: pointer;
+}
+
+::selection {
+  background: rgba(154, 166, 240, 0.32);
+  color: #0f1115;
+}
+
+/* Subtle scroll styling */
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar-thumb {
+  background: #e3e6ec;
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+*::-webkit-scrollbar-thumb:hover { background: #cdd1d9; background-clip: padding-box; border: 2px solid transparent; }
+
+/* Number-tabular for figures */
+.tnum { font-variant-numeric: tabular-nums; }
+
+/* Recharts tooltip override */
+.recharts-default-tooltip {
+  background: #ffffff !important;
+  border: 1px solid #e7e9ee !important;
+  border-radius: 12px !important;
+  box-shadow: 0 8px 28px rgba(15, 17, 21, 0.10) !important;
+  padding: 10px 12px !important;
+}
+
+.recharts-tooltip-label { color: #5b6068 !important; font-size: 11px !important; font-weight: 500 !important; margin-bottom: 4px !important; }
+.recharts-tooltip-item { color: #0f1115 !important; font-size: 12px !important; }
+
+/* Numeric input clean look */
+input[type="number"]::-webkit-outer-spin-button,
+input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+input[type="number"] { -moz-appearance: textfield; }
+
+/* Util */
+.no-scrollbar::-webkit-scrollbar { display: none; }
+.no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }

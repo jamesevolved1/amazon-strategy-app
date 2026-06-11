@@ -1,0 +1,612 @@
+import React, { useMemo, useState } from 'react'
+import {
+  Plane, ShoppingCart, Target as TargetIcon, TrendingUp, Package, Megaphone, Eye, MousePointerClick, Percent, BarChart3 as BarIcon, ArrowUpRight,
+  RefreshCcw, PlayCircle, Search,
+} from 'lucide-react'
+import {
+  Area, CartesianGrid, ComposedChart, Legend, Line, ResponsiveContainer, Tooltip, XAxis, YAxis,
+} from 'recharts'
+import { useStore } from '../lib/store'
+import { Panel, Pill, SegmentedControl, EmptyState, Button, cx, Delta } from '../components/ui'
+import { KPICard } from '../components/KPICard'
+import { compact, currency, dateRangeLabel, daysBetween, deltaPct, num, percent, relativeTime, timestamp } from '../lib/format'
+import {
+  adProductSummary, totalsFromSeries, type ReportingTotals,
+} from '../utils/pnl'
+import { resolveRange, sliceSeries, type RangePreset } from '../utils/dateRange'
+import type { BulkCampaignData, BusinessReportData } from '../utils/parsers'
+import type { CampaignRow, DailySeriesPoint } from '../types'
+
+export function ReportingDashboard() {
+  const { currentClient, currentBundle } = useStore()
+  const [preset, setPreset] = useState<RangePreset>('7d')
+  const [campaignSearch, setCampaignSearch] = useState('')
+  const [campaignFilter, setCampaignFilter] = useState<'all' | 'SP' | 'SB' | 'OTHER'>('all')
+  const [campaignSort, setCampaignSort] = useState<'spend' | 'sales' | 'orders' | 'roas'>('spend')
+
+  if (!currentClient || !currentBundle) {
+    return (
+      <EmptyState
+        title="Add a client to begin"
+        description="Use the switcher in the sidebar to create a client, then upload reports to populate this dashboard."
+      />
+    )
+  }
+
+  const bulk = currentBundle.reports.bulkCampaigns?.parsed as BulkCampaignData | undefined
+  const biz = currentBundle.reports.businessReport?.parsed as BusinessReportData | undefined
+
+  // Build a merged daily series from bulk daily + business report daily.
+  const series: DailySeriesPoint[] = useMemo(() => {
+    const map = new Map<string, DailySeriesPoint>()
+    const ingest = (arr: DailySeriesPoint[] | undefined) => {
+      for (const p of arr ?? []) {
+        const existing = map.get(p.date) ?? { date: p.date, spend: 0, adSales: 0, orders: 0, impressions: 0, clicks: 0 }
+        existing.spend = Math.max(existing.spend, p.spend)
+        existing.adSales = Math.max(existing.adSales, p.adSales)
+        existing.orders = Math.max(existing.orders, p.orders)
+        existing.impressions = Math.max(existing.impressions, p.impressions)
+        existing.clicks = Math.max(existing.clicks, p.clicks)
+        if (p.totalSales != null) existing.totalSales = (existing.totalSales ?? 0) + p.totalSales
+        map.set(p.date, existing)
+      }
+    }
+    ingest(bulk?.daily)
+    ingest(biz?.daily)
+    return Array.from(map.values())
+      .map(p => ({
+        ...p,
+        ctr: p.impressions ? (p.clicks / p.impressions) * 100 : 0,
+        cvr: p.clicks ? (p.orders / p.clicks) * 100 : 0,
+      }))
+      .sort((a, b) => a.date.localeCompare(b.date))
+  }, [bulk, biz])
+
+  const range = useMemo(() => resolveRange(series, preset), [series, preset])
+  const slice = range ? sliceSeries(series, range.start, range.end) : []
+  const prev = range ? sliceSeries(series, range.prevStart, range.prevEnd) : []
+  const totals = useMemo(() => totalsFromSeries(slice, range?.days), [slice, range])
+  const prevTotals = useMemo(() => totalsFromSeries(prev, range ? daysBetween(range.prevStart, range.prevEnd) : 0), [prev, range])
+
+  const campaigns = bulk?.campaigns ?? []
+  const adSummary = useMemo(() => adProductSummary(campaigns), [campaigns])
+
+  const filteredCampaigns = useMemo(() => {
+    let rows = campaigns
+    if (campaignFilter === 'OTHER') rows = rows.filter(c => c.type === 'SD' || c.type === 'OTHER')
+    else if (campaignFilter !== 'all') rows = rows.filter(c => c.type === campaignFilter)
+    if (campaignSearch.trim()) {
+      const q = campaignSearch.trim().toLowerCase()
+      rows = rows.filter(c => c.campaign.toLowerCase().includes(q) || (c.campaignId ?? '').toLowerCase().includes(q) || (c.product ?? '').toLowerCase().includes(q))
+    }
+    rows = rows.slice()
+    switch (campaignSort) {
+      case 'spend': rows.sort((a, b) => b.spend - a.spend); break
+      case 'sales': rows.sort((a, b) => b.adSales - a.adSales); break
+      case 'orders': rows.sort((a, b) => b.orders - a.orders); break
+      case 'roas': rows.sort((a, b) => b.roas - a.roas); break
+    }
+    return rows
+  }, [campaigns, campaignFilter, campaignSearch, campaignSort])
+
+  const hasData = series.length > 0 || campaigns.length > 0
+
+  if (!hasData) {
+    return (
+      <EmptyState
+        title="No synced report data yet"
+        description="Upload a bulk campaign export and business report from the Upload Reports tab to populate this dashboard."
+      />
+    )
+  }
+
+  const synced = lastUploadAt(currentBundle)
+  const stale = synced ? (Date.now() - new Date(synced).getTime()) > 86_400_000 : false
+
+  return (
+    <div className="space-y-5">
+      <AccountHeader
+        client={currentClient}
+        campaignCount={campaigns.length}
+        synced={synced}
+        history={series.length ? { start: series[0].date, end: series[series.length - 1].date } : null}
+        stale={stale}
+      />
+
+      <div className="flex items-end justify-between gap-4 flex-wrap">
+        <div>
+          <SegmentedControl
+            value={preset}
+            onChange={setPreset}
+            options={[
+              { id: '7d', label: 'Last 7 days' },
+              { id: '14d', label: 'Last 14 days' },
+              { id: '30d', label: 'Last 30 days' },
+              { id: 'all', label: 'All synced' },
+            ]}
+          />
+          {range && (
+            <div className="mt-2 text-xs text-ink-mute tnum">
+              {range.start} → {range.end} · <span className="text-ink-faint">{range.days} days of data</span>
+            </div>
+          )}
+        </div>
+      </div>
+
+      <KPIRow totals={totals} prev={prevTotals} ccy={currentClient.currency} />
+
+      {range && (
+        <div className="text-xs text-ink-faint -mt-2">
+          vs previous period · {range.prevStart} → {range.prevEnd}
+        </div>
+      )}
+
+      <div className="grid grid-cols-1 xl:grid-cols-3 gap-5">
+        <Panel className="xl:col-span-2">
+          <div className="flex items-end justify-between mb-3">
+            <div>
+              <h2 className="text-base font-semibold text-ink">Daily spend vs sales</h2>
+              <p className="text-xs text-ink-mute mt-0.5">{range?.label ?? '—'}</p>
+            </div>
+            <ChartLegend />
+          </div>
+          <ChartArea data={slice} ccy={currentClient.currency} />
+        </Panel>
+
+        <Panel>
+          <h2 className="text-base font-semibold text-ink">By ad product</h2>
+          <div className="mt-3 space-y-3">
+            {adSummary.length === 0 && <p className="text-sm text-ink-faint">Upload bulk campaign export to populate.</p>}
+            {adSummary.map(g => (
+              <div key={g.type} className="rounded-lg border border-line p-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <Pill tone={g.type === 'SP' ? 'peri' : g.type === 'SB' ? 'mint' : g.type === 'SD' ? 'lavender' : 'mute'}>{g.type}</Pill>
+                    <span className="text-xs text-ink-mute">{num(g.count)} campaigns</span>
+                  </div>
+                  <Pill tone={g.acos > 35 ? 'gold' : g.acos > 0 ? 'peri' : 'mute'}>
+                    ACOS {g.acos > 0 ? percent(g.acos, 1) : '—'}
+                  </Pill>
+                </div>
+                <div className="mt-2 flex items-center gap-5 text-xs text-ink-mute tnum">
+                  <span>Spend <span className="text-ink ml-1">{currency(g.spend, currentClient.currency)}</span></span>
+                  <span>Sales <span className="text-ink ml-1">{currency(g.sales, currentClient.currency)}</span></span>
+                </div>
+                <div className="mt-2 h-1.5 rounded-full bg-[#f1f2f5] overflow-hidden">
+                  <div
+                    className={cx(
+                      'h-full rounded-full',
+                      g.type === 'SP' ? 'bg-accent-peri' : g.type === 'SB' ? 'bg-accent-mint' : g.type === 'SD' ? 'bg-accent-lavender' : 'bg-ink-faint',
+                    )}
+                    style={{ width: `${Math.min(100, Math.max(2, g.share))}%` }}
+                  />
+                </div>
+              </div>
+            ))}
+          </div>
+        </Panel>
+      </div>
+
+      <SalesMix totals={totals} ccy={currentClient.currency} />
+
+      <CampaignTable
+        campaigns={filteredCampaigns}
+        ccy={currentClient.currency}
+        search={campaignSearch}
+        onSearch={setCampaignSearch}
+        filter={campaignFilter}
+        onFilter={setCampaignFilter}
+        sort={campaignSort}
+        onSort={setCampaignSort}
+        totalRowCount={campaigns.length}
+      />
+    </div>
+  )
+}
+
+function AccountHeader({
+  client, campaignCount, synced, history, stale,
+}: {
+  client: import('../types').Client
+  campaignCount: number
+  synced: string | null
+  history: { start: string; end: string } | null
+  stale: boolean
+}) {
+  return (
+    <div className="flex items-start justify-between gap-4 flex-wrap">
+      <div className="flex items-center gap-3">
+        <div className="w-10 h-10 rounded-xl bg-accent-periSoft flex items-center justify-center text-[#3b48a5] text-sm font-semibold">
+          {client.name.trim().slice(0, 2).toUpperCase()}
+        </div>
+        <div>
+          <div className="text-lg font-semibold text-ink leading-tight">{client.name}</div>
+          <div className="text-xs text-ink-mute mt-0.5">
+            {client.marketplace} · {client.currency} · {num(campaignCount)} campaigns
+          </div>
+          <div className="text-2xs text-ink-faint mt-1">
+            Last sync: {timestamp(synced ?? undefined)}
+            {history && <> · History: {history.start} → {history.end} ({daysBetween(history.start, history.end)} days)</>}
+          </div>
+        </div>
+      </div>
+      <div className="flex items-center gap-2">
+        <Pill tone="gold" className="px-3 py-1">
+          <PlayCircle className="w-3 h-3" />
+          Presentation ON
+        </Pill>
+        <Pill tone={stale ? 'gold' : 'mint'} className="px-3 py-1">
+          <span className={cx('w-1.5 h-1.5 rounded-full', stale ? 'bg-[#c98a1a]' : 'bg-[#1f7a4a]')} />
+          {stale ? `Out of date · synced ${relativeTime(synced ?? undefined)}` : `Synced ${relativeTime(synced ?? undefined)}`}
+        </Pill>
+        <Button icon={<RefreshCcw className="w-4 h-4" />}>Sync now</Button>
+      </div>
+    </div>
+  )
+}
+
+function KPIRow({ totals, prev, ccy }: { totals: ReportingTotals; prev: ReportingTotals; ccy: import('../types').Currency }) {
+  return (
+    <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3.5">
+      <KPICard
+        label="Ad Spend"
+        tone="peri"
+        icon={<Plane className="w-3.5 h-3.5" />}
+        value={currency(totals.spend, ccy, true)}
+        delta={deltaPct(totals.spend, prev.spend)}
+        deltaInvert
+        secondary={`${currency(totals.perDaySpend, ccy)}/day`}
+      />
+      <KPICard
+        label="Attributed Sales"
+        tone="mint"
+        icon={<ShoppingCart className="w-3.5 h-3.5" />}
+        value={currency(totals.adSales, ccy, true)}
+        delta={deltaPct(totals.adSales, prev.adSales)}
+        secondary={`${currency(totals.perDaySales * (totals.adSales / Math.max(totals.totalSales, 1)), ccy)}/day`}
+      />
+      <KPICard
+        label="Account TACOS"
+        tone="gold"
+        icon={<TargetIcon className="w-3.5 h-3.5" />}
+        value={percent(totals.tacos, 1)}
+        delta={deltaPct(totals.tacos, prev.tacos)}
+        deltaInvert
+        secondary="spend / total sales"
+      />
+      <KPICard
+        label="ROAS"
+        tone="lavender"
+        icon={<TrendingUp className="w-3.5 h-3.5" />}
+        value={`${(totals.roas || 0).toFixed(2)}×`}
+        delta={deltaPct(totals.roas, prev.roas)}
+        secondary="sales / ad cost"
+      />
+      <KPICard
+        label="Orders"
+        tone="blush"
+        icon={<Package className="w-3.5 h-3.5" />}
+        value={num(totals.orders)}
+        delta={deltaPct(totals.orders, prev.orders)}
+        secondary={`${percent(totals.cvr, 2)} CVR`}
+      />
+      <KPICard
+        label="Total Sales"
+        tone="mint"
+        icon={<ArrowUpRight className="w-3.5 h-3.5" />}
+        value={currency(totals.totalSales, ccy, true)}
+        delta={deltaPct(totals.totalSales, prev.totalSales)}
+        secondary={`Organic ${currency(totals.organicSales, ccy, true)}`}
+      />
+      <KPICard
+        label="Impressions"
+        tone="peri"
+        icon={<Eye className="w-3.5 h-3.5" />}
+        value={compact(totals.impressions)}
+        delta={deltaPct(totals.impressions, prev.impressions)}
+      />
+      <KPICard
+        label="Clicks"
+        tone="mint"
+        icon={<MousePointerClick className="w-3.5 h-3.5" />}
+        value={compact(totals.clicks)}
+        delta={deltaPct(totals.clicks, prev.clicks)}
+      />
+      <KPICard
+        label="CTR"
+        tone="lavender"
+        icon={<Percent className="w-3.5 h-3.5" />}
+        value={percent(totals.ctr, 2)}
+        delta={deltaPct(totals.ctr, prev.ctr)}
+      />
+      <KPICard
+        label="CVR"
+        tone="mint"
+        icon={<BarIcon className="w-3.5 h-3.5" />}
+        value={percent(totals.cvr, 2)}
+        delta={deltaPct(totals.cvr, prev.cvr)}
+      />
+      <KPICard
+        label="CPC"
+        tone="gold"
+        icon={<Megaphone className="w-3.5 h-3.5" />}
+        value={currency(totals.cpc, ccy)}
+        delta={deltaPct(totals.cpc, prev.cpc)}
+        deltaInvert
+      />
+      <KPICard
+        label="Conv. Rate"
+        tone="blush"
+        icon={<Percent className="w-3.5 h-3.5" />}
+        value={percent(totals.cvr, 2)}
+        delta={deltaPct(totals.cvr, prev.cvr)}
+        secondary={`AOV ${currency(totals.orders ? totals.adSales / totals.orders : 0, ccy)}`}
+      />
+    </div>
+  )
+}
+
+function ChartLegend() {
+  return (
+    <div className="flex items-center gap-4 text-xs">
+      <Legend1 color="#0f1115" label="Sales" />
+      <Legend1 color="#9aa6f0" label="Spend" />
+      <Legend1 color="#1f9d6b" label="CVR" />
+    </div>
+  )
+}
+function Legend1({ color, label }: { color: string; label: string }) {
+  return (
+    <span className="inline-flex items-center gap-1.5 text-ink-mute">
+      <span className="w-2 h-2 rounded-full" style={{ background: color }} />
+      {label}
+    </span>
+  )
+}
+
+function ChartArea({ data, ccy }: { data: DailySeriesPoint[]; ccy: import('../types').Currency }) {
+  if (data.length === 0) return <div className="h-64 flex items-center justify-center text-sm text-ink-faint">No data in this range.</div>
+  return (
+    <div className="h-72 w-full">
+      <ResponsiveContainer width="100%" height="100%">
+        <ComposedChart data={data} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
+          <defs>
+            <linearGradient id="salesFill" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor="#0f1115" stopOpacity={0.12} />
+              <stop offset="100%" stopColor="#0f1115" stopOpacity={0} />
+            </linearGradient>
+          </defs>
+          <CartesianGrid stroke="#eef0f4" vertical={false} />
+          <XAxis
+            dataKey="date"
+            tickFormatter={d => d.slice(5)}
+            stroke="#9ea3ad"
+            tick={{ fontSize: 11 }}
+            tickLine={false}
+            axisLine={{ stroke: '#e7e9ee' }}
+          />
+          <YAxis
+            yAxisId="left"
+            stroke="#9ea3ad"
+            tick={{ fontSize: 11 }}
+            tickFormatter={v => currency(v, ccy, true)}
+            tickLine={false}
+            axisLine={{ stroke: '#e7e9ee' }}
+          />
+          <YAxis
+            yAxisId="right"
+            orientation="right"
+            stroke="#9ea3ad"
+            tick={{ fontSize: 11 }}
+            tickFormatter={v => `${v.toFixed(1)}%`}
+            tickLine={false}
+            axisLine={{ stroke: '#e7e9ee' }}
+          />
+          <Tooltip
+            formatter={(v: number, name: string) => {
+              if (name === 'CVR') return [`${v.toFixed(2)}%`, name]
+              return [currency(v, ccy), name]
+            }}
+            labelFormatter={(l: string) => l}
+          />
+          <Area yAxisId="left" type="monotone" dataKey={(d: DailySeriesPoint) => (d.totalSales ?? d.adSales)} name="Sales" stroke="#0f1115" strokeWidth={2} fill="url(#salesFill)" dot={false} activeDot={{ r: 4 }} />
+          <Line yAxisId="left" type="monotone" dataKey="spend" name="Spend" stroke="#9aa6f0" strokeWidth={2} dot={false} />
+          <Line yAxisId="right" type="monotone" dataKey={(d: DailySeriesPoint) => d.cvr ?? 0} name="CVR" stroke="#1f9d6b" strokeWidth={2} dot={false} />
+        </ComposedChart>
+      </ResponsiveContainer>
+    </div>
+  )
+}
+
+function SalesMix({ totals, ccy }: { totals: ReportingTotals; ccy: import('../types').Currency }) {
+  const adShare = totals.totalSales > 0 ? (totals.adSales / totals.totalSales) * 100 : 0
+  const organicShare = 100 - adShare
+  return (
+    <Panel>
+      <div className="flex items-end justify-between mb-4">
+        <div>
+          <h2 className="text-base font-semibold text-ink">Sales mix</h2>
+          <p className="text-xs text-ink-mute mt-0.5">Ad vs organic contribution to total sales</p>
+        </div>
+        <Pill tone={totals.tacos > 18 ? 'gold' : 'mint'}>
+          TACOS {percent(totals.tacos, 1)}
+        </Pill>
+      </div>
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+        <Stat label="Ad-attributed" value={currency(totals.adSales, ccy)} hint={`${percent(adShare, 1)} of total`} tone="peri" />
+        <Stat label="Organic" value={currency(totals.organicSales, ccy)} hint={`${percent(organicShare, 1)} of total`} tone="mint" />
+        <Stat label="Total sales" value={currency(totals.totalSales, ccy)} hint={`${num(totals.days)} days`} tone="lavender" />
+        <Stat label="Orders" value={num(totals.orders)} hint={`AOV ${currency(totals.orders ? totals.adSales / totals.orders : 0, ccy)}`} tone="gold" />
+      </div>
+      <div className="mt-4 h-2 rounded-full bg-accent-mintSoft overflow-hidden">
+        <div className="h-full bg-accent-peri" style={{ width: `${Math.min(100, Math.max(2, adShare))}%` }} />
+      </div>
+      <div className="mt-1.5 flex items-center justify-between text-2xs text-ink-faint tnum">
+        <span>Ad {percent(adShare, 1)}</span>
+        <span>Organic {percent(organicShare, 1)}</span>
+      </div>
+    </Panel>
+  )
+}
+
+function Stat({ label, value, hint, tone }: { label: string; value: React.ReactNode; hint?: string; tone: 'peri' | 'mint' | 'gold' | 'lavender' | 'blush' }) {
+  const stripe: Record<string, string> = {
+    peri: 'bg-accent-peri', mint: 'bg-accent-mint', gold: 'bg-accent-gold', lavender: 'bg-accent-lavender', blush: 'bg-accent-blush',
+  }
+  return (
+    <div className="relative rounded-lg border border-line p-3">
+      <div className={cx('absolute left-3 right-3 top-0 h-[2px] rounded-b-full', stripe[tone])} />
+      <div className="text-2xs uppercase tracking-wider text-ink-mute font-semibold">{label}</div>
+      <div className="mt-1.5 tnum text-lg font-semibold text-ink">{value}</div>
+      {hint && <div className="mt-0.5 text-2xs text-ink-faint">{hint}</div>}
+    </div>
+  )
+}
+
+function CampaignTable({
+  campaigns, ccy, search, onSearch, filter, onFilter, sort, onSort, totalRowCount,
+}: {
+  campaigns: CampaignRow[]
+  ccy: import('../types').Currency
+  search: string; onSearch: (v: string) => void
+  filter: 'all' | 'SP' | 'SB' | 'OTHER'; onFilter: (v: 'all' | 'SP' | 'SB' | 'OTHER') => void
+  sort: 'spend' | 'sales' | 'orders' | 'roas'; onSort: (v: 'spend' | 'sales' | 'orders' | 'roas') => void
+  totalRowCount: number
+}) {
+  const top = campaigns.slice(0, 3)
+  const needsAttention = [...campaigns]
+    .filter(c => c.spend > 0)
+    .sort((a, b) => (b.spend - b.adSales) - (a.spend - a.adSales))
+    .slice(0, 3)
+
+  return (
+    <Panel className="overflow-hidden" padding="p-0">
+      <div className="px-5 pt-5 pb-3 flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <h2 className="text-base font-semibold text-ink">Campaigns</h2>
+          <p className="text-xs text-ink-mute mt-0.5">{num(totalRowCount)} active across SP, SB and Other ad products</p>
+        </div>
+        <div className="flex items-center gap-2 flex-wrap">
+          <div className="relative">
+            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-ink-faint" />
+            <input
+              value={search}
+              onChange={e => onSearch(e.target.value)}
+              placeholder="Search campaigns, ID, product..."
+              className="w-72 pl-7 pr-3 py-1.5 rounded-full border border-line bg-canvas-panel text-xs focus:outline-none focus:ring-2 focus:ring-ink/15"
+            />
+          </div>
+          <SegmentedControl<'all' | 'SP' | 'SB' | 'OTHER'>
+            value={filter}
+            onChange={onFilter}
+            options={[
+              { id: 'all', label: `All (${num(totalRowCount)})` },
+              { id: 'SP', label: `SP (${num(campaigns.filter(c => c.type === 'SP').length)})` },
+              { id: 'SB', label: `SB (${num(campaigns.filter(c => c.type === 'SB').length)})` },
+              { id: 'OTHER', label: `Other (${num(campaigns.filter(c => c.type === 'SD' || c.type === 'OTHER').length)})` },
+            ]}
+          />
+          <select
+            value={sort}
+            onChange={e => onSort(e.target.value as typeof sort)}
+            className="px-3 py-1.5 rounded-full border border-line text-xs bg-canvas-panel"
+          >
+            <option value="spend">Sort: Spend</option>
+            <option value="sales">Sort: Sales</option>
+            <option value="orders">Sort: Orders</option>
+            <option value="roas">Sort: ROAS</option>
+          </select>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3 px-5 pb-3">
+        <SummaryStrip title="Top campaigns" rows={top} tone="mint" ccy={ccy} />
+        <SummaryStrip title="Needs attention" rows={needsAttention} tone="gold" ccy={ccy} invert />
+      </div>
+
+      <div className="overflow-x-auto border-t border-line">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="bg-canvas-tint text-ink-mute text-2xs uppercase tracking-wider">
+              <th className="text-left px-5 py-2.5 font-medium">Campaign</th>
+              <th className="text-left px-3 py-2.5 font-medium">Type</th>
+              <th className="text-right px-3 py-2.5 font-medium">Impressions</th>
+              <th className="text-right px-3 py-2.5 font-medium">Clicks</th>
+              <th className="text-right px-3 py-2.5 font-medium">Spend</th>
+              <th className="text-right px-3 py-2.5 font-medium">Ad Sales</th>
+              <th className="text-right px-3 py-2.5 font-medium">Orders</th>
+              <th className="text-right px-3 py-2.5 font-medium">ROAS</th>
+              <th className="text-right px-3 py-2.5 font-medium">CTR</th>
+              <th className="text-right px-3 py-2.5 font-medium pr-5">CVR</th>
+            </tr>
+          </thead>
+          <tbody>
+            {campaigns.length === 0 && (
+              <tr><td colSpan={10} className="text-center py-8 text-sm text-ink-faint">No campaigns match these filters.</td></tr>
+            )}
+            {campaigns.slice(0, 200).map((c, i) => (
+              <tr key={`${c.campaignId ?? c.campaign}-${i}`} className="border-t border-line hover:bg-canvas-tint">
+                <td className="px-5 py-2.5 max-w-[420px]">
+                  <div className="font-medium text-ink truncate">{c.campaign}</div>
+                  {c.campaignId && <div className="text-2xs text-ink-faint tnum">{c.campaignId}</div>}
+                </td>
+                <td className="px-3 py-2.5">
+                  <Pill tone={c.type === 'SP' ? 'peri' : c.type === 'SB' ? 'mint' : c.type === 'SD' ? 'lavender' : 'mute'}>{c.type}</Pill>
+                </td>
+                <td className="px-3 py-2.5 text-right tnum">{compact(c.impressions)}</td>
+                <td className="px-3 py-2.5 text-right tnum">{compact(c.clicks)}</td>
+                <td className="px-3 py-2.5 text-right tnum">{currency(c.spend, ccy)}</td>
+                <td className="px-3 py-2.5 text-right tnum">{currency(c.adSales, ccy)}</td>
+                <td className="px-3 py-2.5 text-right tnum">{num(c.orders)}</td>
+                <td className="px-3 py-2.5 text-right tnum">
+                  <Pill tone={c.roas >= 3 ? 'mint' : c.roas >= 1.5 ? 'peri' : 'blush'}>
+                    {c.roas > 0 ? `${c.roas.toFixed(2)}×` : '—'}
+                  </Pill>
+                </td>
+                <td className="px-3 py-2.5 text-right tnum">{percent(c.ctr, 2)}</td>
+                <td className="px-3 py-2.5 text-right tnum pr-5">{percent(c.cvr, 2)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {campaigns.length > 200 && (
+        <div className="px-5 py-3 text-2xs text-ink-faint border-t border-line">
+          Showing first 200 of {num(campaigns.length)} matching campaigns. Refine the search above to narrow.
+        </div>
+      )}
+    </Panel>
+  )
+}
+
+function SummaryStrip({ title, rows, tone, ccy, invert }: { title: string; rows: CampaignRow[]; tone: 'mint' | 'gold'; ccy: import('../types').Currency; invert?: boolean }) {
+  if (rows.length === 0) return null
+  return (
+    <div className={cx('rounded-lg border border-line p-3', tone === 'mint' ? 'bg-accent-mintSoft/30' : 'bg-accent-goldSoft/30')}>
+      <div className="flex items-center justify-between mb-2">
+        <span className="text-2xs uppercase tracking-wider font-semibold text-ink-mute">{title}</span>
+        <Pill tone={tone}>{rows.length}</Pill>
+      </div>
+      <div className="space-y-1.5">
+        {rows.map((c, i) => (
+          <div key={i} className="flex items-center justify-between gap-3 text-xs">
+            <span className="truncate text-ink">{c.campaign}</span>
+            <span className="tnum text-ink-mute">
+              {currency(c.spend, ccy)} · {c.roas > 0 ? `${c.roas.toFixed(2)}×` : '—'}
+              {invert && c.spend - c.adSales > 0 && <span className="text-[#9c4651] ml-1">(-{currency(c.spend - c.adSales, ccy)})</span>}
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function lastUploadAt(bundle: import('../types').ClientBundle): string | null {
+  let latest: string | null = null
+  for (const r of Object.values(bundle.reports)) {
+    if (!r) continue
+    if (!latest || r.uploadedAt > latest) latest = r.uploadedAt
+  }
+  return latest
+}
