@@ -7,6 +7,7 @@ import type { ClientGoals } from '../types'
 export interface FunnelInputs {
   budget: number          // monthly ad budget
   cpc: number             // expected CPC
+  ctr?: number            // %, impression → click (optional — used to derive impressions in scenarios)
   cvr: number             // %, click → order
   aov: number             // average order value, paid
   organicLiftRatio: number // paid → organic multiplier, e.g. 0.6 means 60% of paid sales come back as organic
@@ -47,6 +48,7 @@ export function defaultInputsFromGoals(goals: ClientGoals, baseline?: Partial<Fu
   return {
     budget: goals.monthlyAdBudget || 0,
     cpc: baseline?.cpc ?? 1.0,
+    ctr: baseline?.ctr ?? 0.5,
     cvr: baseline?.cvr ?? 10,
     aov: baseline?.aov ?? 35,
     organicLiftRatio: baseline?.organicLiftRatio ?? 0.6,
@@ -55,6 +57,18 @@ export function defaultInputsFromGoals(goals: ClientGoals, baseline?: Partial<Fu
     primaryTacos: goals.primaryTacosGoal || 12,
     ceilingTacos: goals.acceptableTacosCeiling || 18,
   }
+}
+
+/**
+ * Run the funnel anchored to a click target instead of a budget. Used by the
+ * editable scenarios table where the strategist drives by clicks ("what if we
+ * pushed 25,000 clicks?") and the budget is derived: budget = clicks × cpc.
+ */
+export function runFunnelByClicks(i: FunnelInputs, clicks: number): FunnelResult & { impressions: number } {
+  const budget = clicks * i.cpc
+  const r = runFunnel({ ...i, budget })
+  const impressions = i.ctr && i.ctr > 0 ? clicks / (i.ctr / 100) : 0
+  return { ...r, impressions }
 }
 
 export function runFunnel(i: FunnelInputs): FunnelResult {

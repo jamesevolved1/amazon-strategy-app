@@ -1,81 +1,95 @@
-// Ad Potential: slider-first scenario explorer. ROAS is the headline metric.
-// No ACOS anywhere. TACOS appears only as a cost-efficiency guardrail.
+// Ad Potential: editable baseline + editable click-driven scenarios.
+// ROAS is the headline metric. No ACOS anywhere. TACOS is a guardrail.
 
 import React, { useMemo, useState } from 'react'
-import { AlertTriangle, CheckCircle2, ChevronDown, ChevronUp, Sparkles, TrendingUp, Wallet, Activity, ShoppingCart, Eye } from 'lucide-react'
+import {
+  AlertTriangle, CheckCircle2, ChevronDown, ChevronUp, Sparkles, TrendingUp, Wallet,
+  Activity, ShoppingCart, Eye, Plus, Trash2, Target, RotateCcw,
+} from 'lucide-react'
 import { Panel, Pill, EmptyState, NumberField, cx, Button } from '../components/ui'
 import { KPICard } from '../components/KPICard'
 import { useStore } from '../lib/store'
-import { runFunnel, type FunnelInputs } from '../utils/adPotential'
+import { runFunnel, runFunnelByClicks, type FunnelInputs } from '../utils/adPotential'
 import { currency, num, percent } from '../lib/format'
 import { totalsFromSeries } from '../utils/pnl'
 import { resolveRange, sliceSeries } from '../utils/dateRange'
 import type { BulkCampaignData } from '../utils/parsers'
 import type { Currency, DailySeriesPoint } from '../types'
 
-interface Assumptions {
+interface Baseline {
   cpc: number
+  ctr: number          // %
   cvr: number          // %
   aov: number
   organicLiftRatio: number
 }
 
+interface Scenario {
+  id: string
+  label: string
+  clicks: number
+}
+
+function randomId() {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') return crypto.randomUUID()
+  return `s-${Math.random().toString(36).slice(2, 8)}`
+}
+
 export function AdPotential() {
   const { currentClient, currentBundle } = useStore()
-  const [assumptionsOpen, setAssumptionsOpen] = useState(false)
 
   if (!currentClient || !currentBundle) return <EmptyState title="No client selected" />
 
-  // Baseline from synced campaign data (when present).
+  const goals = currentBundle.goals
   const bulk = currentBundle.reports.bulkCampaigns?.parsed as BulkCampaignData | undefined
   const series = (bulk?.daily ?? []) as DailySeriesPoint[]
   const range = resolveRange(series, '30d')
   const totals = range ? totalsFromSeries(sliceSeries(series, range.start, range.end), range.days) : null
+  const haveSync = Boolean(totals && totals.spend > 0)
 
-  const goals = currentBundle.goals
-  const baselineBudget = goals.monthlyAdBudget || (totals ? totals.perDaySpend * 30 : 5000)
-
-  const [assumptions, setAssumptions] = useState<Assumptions>(() => ({
-    cpc: totals?.cpc && totals.cpc > 0 ? round2(totals.cpc) : 1,
-    cvr: totals?.cvr && totals.cvr > 0 ? round2(totals.cvr) : 10,
+  // Editable baseline metrics (the unit economics)
+  const [baseline, setBaseline] = useState<Baseline>(() => ({
+    cpc: round2(totals?.cpc) || 1,
+    ctr: round2(totals?.ctr) || 0.5,
+    cvr: round2(totals?.cvr) || 10,
     aov: totals && totals.orders > 0 ? round2(totals.adSales / totals.orders) : 35,
     organicLiftRatio: 0.6,
   }))
 
-  const [budget, setBudget] = useState<number>(() => baselineBudget || 5000)
-
-  // Slider range: 0 → 3× whichever is larger between current spend and goal budget,
-  // with a $1000 floor so the slider is always useful even pre-data.
-  const sliderMax = Math.max(1000, Math.round((baselineBudget || 0) * 3 / 100) * 100 || 25000)
+  // Editable target ROAS (defaults from goals, but the user can override here
+  // to test alternate plans without changing the persisted goal).
+  const [targetRoas, setTargetRoas] = useState<number>(() => goals.targetRoas || 5)
+  const [minRoas, setMinRoas] = useState<number>(() => goals.minimumAcceptableRoas || 3)
 
   const inputs: FunnelInputs = useMemo(() => ({
-    budget,
-    cpc: assumptions.cpc,
-    cvr: assumptions.cvr,
-    aov: assumptions.aov,
-    organicLiftRatio: assumptions.organicLiftRatio,
-    targetRoas: goals.targetRoas || 5,
-    minRoas: goals.minimumAcceptableRoas || 3,
+    budget: goals.monthlyAdBudget || 0,
+    cpc: baseline.cpc,
+    ctr: baseline.ctr,
+    cvr: baseline.cvr,
+    aov: baseline.aov,
+    organicLiftRatio: baseline.organicLiftRatio,
+    targetRoas,
+    minRoas,
     primaryTacos: goals.primaryTacosGoal || 12,
     ceilingTacos: goals.acceptableTacosCeiling || 18,
-  }), [budget, assumptions, goals])
+  }), [baseline, goals, targetRoas, minRoas])
 
-  const result = useMemo(() => runFunnel(inputs), [inputs])
+  // Scenarios — editable, click-driven. Default-seeded against the goal budget.
+  const goalClicks = inputs.cpc > 0 ? Math.round((goals.monthlyAdBudget || 5000) / inputs.cpc / 250) * 250 : 5000
+  const [scenarios, setScenarios] = useState<Scenario[]>(() => [
+    { id: randomId(), label: 'Pull back',  clicks: Math.max(250, Math.round(goalClicks * 0.5 / 250) * 250) },
+    { id: randomId(), label: 'Current',    clicks: goalClicks },
+    { id: randomId(), label: 'Push +50%',  clicks: Math.round(goalClicks * 1.5 / 250) * 250 },
+    { id: randomId(), label: 'Stretch 5×', clicks: Math.round(goalClicks * 5 / 1000) * 1000 },
+  ])
+  // Anchor: which scenario drives the big stats. Defaults to "Current".
+  const [anchorId, setAnchorId] = useState<string>(() => scenarios.find(s => s.label === 'Current')?.id ?? scenarios[0]?.id ?? '')
 
-  // Scenarios — 4 budget levels relative to slider value
-  const scenarios = useMemo(() => {
-    const make = (label: string, multiplier: number, tone: 'mint' | 'peri' | 'gold' | 'blush') => {
-      const b = Math.round(budget * multiplier)
-      const r = runFunnel({ ...inputs, budget: b })
-      return { label, multiplier, budget: b, result: r, tone, current: multiplier === 1 }
-    }
-    return [
-      make('Pull back', 0.75, 'mint'),
-      make('Current', 1, 'peri'),
-      make('Push +25%', 1.25, 'gold'),
-      make('Push +50%', 1.5, 'blush'),
-    ]
-  }, [budget, inputs])
+  const anchor = scenarios.find(s => s.id === anchorId) ?? scenarios[0]
+  const anchorResult = useMemo(
+    () => anchor ? runFunnelByClicks(inputs, anchor.clicks) : null,
+    [inputs, anchor],
+  )
 
   const ccy = currentClient.currency
 
@@ -84,252 +98,331 @@ export function AdPotential() {
       <header className="flex items-end justify-between flex-wrap gap-3">
         <div>
           <h1 className="text-xl font-semibold text-ink">Ad Potential</h1>
-          <p className="text-sm text-ink-mute mt-0.5">Drag the budget to see what it can do · ROAS-led forecast for {currentClient.name}</p>
+          <p className="text-sm text-ink-mute mt-0.5">
+            Edit the baseline numbers, set your target ROAS, and explore scenarios for {currentClient.name}.
+          </p>
         </div>
-        <RiskPill result={result} inputs={inputs} />
+        {anchorResult && <RiskPill result={anchorResult} inputs={inputs} />}
       </header>
 
-      <BudgetHero
-        budget={budget}
-        sliderMax={sliderMax}
-        onBudget={setBudget}
-        result={result}
-        inputs={inputs}
+      {anchorResult && (
+        <HeroOutputs result={anchorResult} inputs={inputs} ccy={ccy} anchor={anchor!} />
+      )}
+
+      <BaselinePanel
+        baseline={baseline}
+        setBaseline={setBaseline}
+        targetRoas={targetRoas}
+        setTargetRoas={setTargetRoas}
+        minRoas={minRoas}
+        setMinRoas={setMinRoas}
         ccy={ccy}
-        baselineBudget={baselineBudget}
-        haveSync={Boolean(totals && totals.spend > 0)}
+        haveSync={haveSync}
+        onResetBaseline={() => setBaseline({
+          cpc: round2(totals?.cpc) || 1,
+          ctr: round2(totals?.ctr) || 0.5,
+          cvr: round2(totals?.cvr) || 10,
+          aov: totals && totals.orders > 0 ? round2(totals.adSales / totals.orders) : 35,
+          organicLiftRatio: 0.6,
+        })}
       />
 
-      <ScenarioTable scenarios={scenarios} ccy={ccy} inputs={inputs} />
-
-      <WhatNeedsToBeTrue result={result} ccy={ccy} />
-
-      <AssumptionsPanel
-        open={assumptionsOpen}
-        onToggle={() => setAssumptionsOpen(o => !o)}
-        assumptions={assumptions}
-        setAssumptions={setAssumptions}
+      <ScenariosTable
+        scenarios={scenarios}
+        setScenarios={setScenarios}
+        anchorId={anchorId}
+        setAnchorId={setAnchorId}
         inputs={inputs}
         ccy={ccy}
-        baselineFromSync={Boolean(totals && totals.spend > 0)}
       />
+
+      {anchorResult && <WhatNeedsToBeTrue result={anchorResult} ccy={ccy} anchor={anchor!} />}
     </div>
   )
 }
 
-// ----- Hero ----------
+// ---------- Hero outputs ----------
 
-function BudgetHero({
-  budget, sliderMax, onBudget, result, inputs, ccy, baselineBudget, haveSync,
+function HeroOutputs({
+  result, inputs, ccy, anchor,
 }: {
-  budget: number
-  sliderMax: number
-  onBudget: (v: number) => void
-  result: ReturnType<typeof runFunnel>
+  result: ReturnType<typeof runFunnelByClicks>
   inputs: FunnelInputs
   ccy: Currency
-  baselineBudget: number
-  haveSync: boolean
+  anchor: Scenario
 }) {
-  const sliderPct = sliderMax > 0 ? (budget / sliderMax) * 100 : 0
-
   return (
     <Panel>
-      <div className="flex items-baseline justify-between gap-3 mb-3 flex-wrap">
-        <div>
-          <h2 className="text-base font-semibold text-ink">What can your ad budget do?</h2>
-          <p className="text-xs text-ink-mute mt-0.5">
-            Drag the slider, type a number, or click a preset. Outputs update live.
-          </p>
+      <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
+        <div className="flex items-center gap-2.5">
+          <span className="w-9 h-9 rounded-xl bg-accent-mintSoft text-[#1f7a4a] flex items-center justify-center">
+            <Target className="w-4 h-4" />
+          </span>
+          <div>
+            <div className="text-sm font-semibold text-ink">Showing scenario · {anchor.label}</div>
+            <div className="text-xs text-ink-mute mt-0.5">
+              {num(anchor.clicks)} clicks at {currency(inputs.cpc, ccy)} CPC · click any scenario row below to compare
+            </div>
+          </div>
         </div>
-        <div className="flex items-center gap-2 flex-wrap">
-          {baselineBudget > 0 && (
-            <button
-              onClick={() => onBudget(Math.round(baselineBudget))}
-              className="px-2.5 py-1 rounded-full text-2xs font-medium border border-line text-ink-mute hover:text-ink hover:bg-canvas-tint"
-            >
-              Goal · {currency(baselineBudget, ccy)}
-            </button>
-          )}
-          {[0.5, 1, 1.5, 2].map(m => {
-            const b = Math.round(baselineBudget * m / 100) * 100
-            if (!b || b > sliderMax) return null
-            return (
-              <button
-                key={m}
-                onClick={() => onBudget(b)}
-                className={cx(
-                  'px-2.5 py-1 rounded-full text-2xs font-medium border',
-                  budget === b ? 'border-ink bg-ink text-white' : 'border-line text-ink-mute hover:text-ink hover:bg-canvas-tint',
-                )}
-              >
-                {Math.round(m * 100)}%
-              </button>
-            )
-          })}
-        </div>
+        <Pill tone="ink">Anchor</Pill>
       </div>
-
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-        <div className="lg:col-span-5 space-y-4">
-          <div className="rounded-xl2 border border-line p-4 bg-canvas-tint">
-            <label className="block text-2xs uppercase tracking-wider text-ink-mute font-semibold mb-2">Monthly ad budget</label>
-            <div className="flex items-center gap-3">
-              <NumberField
-                value={budget}
-                onChange={onBudget}
-                prefix={currencySymbol(ccy)}
-                className="w-44"
-              />
-              {haveSync && (
-                <span className="text-2xs text-ink-faint leading-tight">
-                  Synced<br />30-day baseline
-                </span>
-              )}
-            </div>
-            <input
-              type="range"
-              min={0}
-              max={sliderMax}
-              step={Math.max(50, Math.round(sliderMax / 200 / 50) * 50)}
-              value={budget}
-              onChange={e => onBudget(Number(e.target.value))}
-              className="asa-range w-full mt-4"
-              style={{ '--pct': `${sliderPct}%` } as React.CSSProperties}
-            />
-            <div className="mt-1.5 flex items-center justify-between text-2xs text-ink-faint tnum">
-              <span>{currency(0, ccy)}</span>
-              <span>{currency(Math.round(sliderMax / 2), ccy, true)}</span>
-              <span>{currency(sliderMax, ccy, true)}</span>
-            </div>
-          </div>
-
-          <p className="text-sm text-ink leading-relaxed">{result.explanation}</p>
-        </div>
-
-        <div className="lg:col-span-7">
-          <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
-            <BigStat
-              label="Total sales"
-              tone="mint"
-              icon={<TrendingUp className="w-3.5 h-3.5" />}
-              value={currency(result.totalSales, ccy, true)}
-              sub={`paid ${currency(result.paidSales, ccy, true)} + organic ${currency(result.organicLift, ccy, true)}`}
-            />
-            <BigStat
-              label="ROAS"
-              tone={result.roas >= inputs.targetRoas ? 'mint' : result.roas >= inputs.minRoas ? 'peri' : 'blush'}
-              icon={<Sparkles className="w-3.5 h-3.5" />}
-              value={`${result.roas.toFixed(2)}×`}
-              sub={`target ${inputs.targetRoas.toFixed(2)}× · min ${inputs.minRoas.toFixed(2)}×`}
-            />
-            <BigStat
-              label="TACOS"
-              tone={result.tacos > inputs.ceilingTacos ? 'blush' : result.tacos > inputs.primaryTacos ? 'gold' : 'mint'}
-              icon={<Activity className="w-3.5 h-3.5" />}
-              value={percent(result.tacos, 1)}
-              sub={`goal ${percent(inputs.primaryTacos)} · ceiling ${percent(inputs.ceilingTacos)}`}
-            />
-            <BigStat
-              label="Paid sales"
-              tone="peri"
-              icon={<Wallet className="w-3.5 h-3.5" />}
-              value={currency(result.paidSales, ccy, true)}
-              sub={`from ${num(result.clicks)} clicks`}
-            />
-            <BigStat
-              label="Orders"
-              tone="lavender"
-              icon={<ShoppingCart className="w-3.5 h-3.5" />}
-              value={num(result.orders)}
-              sub={`${percent(inputs.cvr, 1)} CVR · ${currency(inputs.aov, ccy)} AOV`}
-            />
-            <BigStat
-              label="Clicks"
-              tone="gold"
-              icon={<Eye className="w-3.5 h-3.5" />}
-              value={num(result.clicks)}
-              sub={`at ${currency(inputs.cpc, ccy)} CPC`}
-            />
-          </div>
-        </div>
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+        <KPICard
+          label="Total sales"
+          tone="mint"
+          icon={<TrendingUp className="w-3.5 h-3.5" />}
+          value={currency(result.totalSales, ccy, true)}
+          secondary={`paid + ${currency(result.organicLift, ccy, true)} organic`}
+        />
+        <KPICard
+          label="ROAS"
+          tone={result.roas >= inputs.targetRoas ? 'mint' : result.roas >= inputs.minRoas ? 'peri' : 'blush'}
+          icon={<Sparkles className="w-3.5 h-3.5" />}
+          value={`${result.roas.toFixed(2)}×`}
+          secondary={`target ${inputs.targetRoas.toFixed(2)}× · min ${inputs.minRoas.toFixed(2)}×`}
+        />
+        <KPICard
+          label="TACOS"
+          tone={result.tacos > inputs.ceilingTacos ? 'blush' : result.tacos > inputs.primaryTacos ? 'gold' : 'mint'}
+          icon={<Activity className="w-3.5 h-3.5" />}
+          value={percent(result.tacos, 1)}
+          secondary={`goal ${percent(inputs.primaryTacos)} · ceiling ${percent(inputs.ceilingTacos)}`}
+        />
+        <KPICard
+          label="Paid sales"
+          tone="peri"
+          icon={<Wallet className="w-3.5 h-3.5" />}
+          value={currency(result.paidSales, ccy, true)}
+          secondary={`budget ${currency(result.budget, ccy, true)}`}
+        />
+        <KPICard
+          label="Orders"
+          tone="lavender"
+          icon={<ShoppingCart className="w-3.5 h-3.5" />}
+          value={num(result.orders)}
+          secondary={`${percent(inputs.cvr, 1)} CVR · ${currency(inputs.aov, ccy)} AOV`}
+        />
+        <KPICard
+          label="Impressions"
+          tone="gold"
+          icon={<Eye className="w-3.5 h-3.5" />}
+          value={result.impressions > 0 ? num(result.impressions) : '—'}
+          secondary={inputs.ctr ? `${percent(inputs.ctr, 2)} CTR` : 'set CTR to derive'}
+        />
       </div>
     </Panel>
   )
 }
 
-function BigStat({
-  label, value, sub, tone, icon,
+// ---------- Baseline panel ----------
+
+function BaselinePanel({
+  baseline, setBaseline, targetRoas, setTargetRoas, minRoas, setMinRoas, ccy, haveSync, onResetBaseline,
 }: {
-  label: string
-  value: React.ReactNode
-  sub: string
-  tone: 'mint' | 'peri' | 'gold' | 'lavender' | 'blush'
-  icon: React.ReactNode
+  baseline: Baseline
+  setBaseline: (b: Baseline) => void
+  targetRoas: number
+  setTargetRoas: (v: number) => void
+  minRoas: number
+  setMinRoas: (v: number) => void
+  ccy: Currency
+  haveSync: boolean
+  onResetBaseline: () => void
 }) {
-  return <KPICard label={label} value={value} secondary={sub} tone={tone} icon={icon} />
+  return (
+    <Panel>
+      <div className="flex items-end justify-between mb-3 flex-wrap gap-3">
+        <div>
+          <h2 className="text-base font-semibold text-ink">Baseline · unit economics</h2>
+          <p className="text-xs text-ink-mute mt-0.5">
+            Edit any number to model a different plan. All scenarios below recompute live.
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          <Pill tone={haveSync ? 'mint' : 'gold'}>
+            {haveSync ? 'Synced 30-day baseline' : 'Sensible defaults'}
+          </Pill>
+          {haveSync && (
+            <Button variant="ghost" onClick={onResetBaseline} icon={<RotateCcw className="w-3.5 h-3.5" />}>
+              Reset to synced
+            </Button>
+          )}
+        </div>
+      </div>
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-7 gap-3">
+        <NumberField
+          label="CPC"
+          prefix={currencySymbol(ccy)}
+          step="0.05"
+          value={baseline.cpc}
+          onChange={v => setBaseline({ ...baseline, cpc: v })}
+        />
+        <NumberField
+          label="CTR"
+          suffix="%"
+          step="0.1"
+          value={baseline.ctr}
+          onChange={v => setBaseline({ ...baseline, ctr: v })}
+        />
+        <NumberField
+          label="CVR"
+          suffix="%"
+          step="0.1"
+          value={baseline.cvr}
+          onChange={v => setBaseline({ ...baseline, cvr: v })}
+        />
+        <NumberField
+          label="AOV"
+          prefix={currencySymbol(ccy)}
+          step="0.5"
+          value={baseline.aov}
+          onChange={v => setBaseline({ ...baseline, aov: v })}
+        />
+        <NumberField
+          label="Organic lift"
+          step="0.05"
+          value={baseline.organicLiftRatio}
+          onChange={v => setBaseline({ ...baseline, organicLiftRatio: v })}
+        />
+        <NumberField
+          label="Target ROAS"
+          suffix="×"
+          step="0.1"
+          value={targetRoas}
+          onChange={setTargetRoas}
+        />
+        <NumberField
+          label="Min ROAS"
+          suffix="×"
+          step="0.1"
+          value={minRoas}
+          onChange={setMinRoas}
+        />
+      </div>
+    </Panel>
+  )
 }
 
-// ----- Scenario table ----------
+// ---------- Editable scenarios table ----------
 
-function ScenarioTable({
-  scenarios, ccy, inputs,
+function ScenariosTable({
+  scenarios, setScenarios, anchorId, setAnchorId, inputs, ccy,
 }: {
-  scenarios: Array<{ label: string; multiplier: number; budget: number; result: ReturnType<typeof runFunnel>; tone: 'mint' | 'peri' | 'gold' | 'blush'; current: boolean }>
-  ccy: Currency
+  scenarios: Scenario[]
+  setScenarios: (s: Scenario[]) => void
+  anchorId: string
+  setAnchorId: (id: string) => void
   inputs: FunnelInputs
+  ccy: Currency
 }) {
-  const rows: Array<{ key: string; label: string; render: (r: ReturnType<typeof runFunnel>) => React.ReactNode }> = [
-    { key: 'budget',     label: 'Budget',       render: r => <span className="tnum text-ink">{currency(r.budget, ccy)}</span> },
-    { key: 'clicks',     label: 'Clicks',       render: r => <span className="tnum text-ink">{num(r.clicks)}</span> },
-    { key: 'orders',     label: 'Orders',       render: r => <span className="tnum text-ink">{num(r.orders)}</span> },
-    { key: 'paid',       label: 'Paid sales',   render: r => <span className="tnum text-ink">{currency(r.paidSales, ccy)}</span> },
-    { key: 'organic',    label: 'Organic lift', render: r => <span className="tnum text-ink-mute">{currency(r.organicLift, ccy)}</span> },
-    { key: 'total',      label: 'Total sales',  render: r => <span className="tnum text-ink font-semibold">{currency(r.totalSales, ccy)}</span> },
-    { key: 'roas',       label: 'ROAS',         render: r => <Pill tone={r.roas >= inputs.targetRoas ? 'mint' : r.roas >= inputs.minRoas ? 'peri' : 'blush'}>{r.roas.toFixed(2)}×</Pill> },
-    { key: 'tacos',      label: 'TACOS',        render: r => <Pill tone={r.tacos > inputs.ceilingTacos ? 'blush' : r.tacos > inputs.primaryTacos ? 'gold' : 'mint'}>{percent(r.tacos, 1)}</Pill> },
-  ]
-
-  const stripe: Record<string, string> = {
-    mint: 'bg-accent-mint', peri: 'bg-accent-peri', gold: 'bg-accent-gold', blush: 'bg-accent-blush',
+  const updateScenario = (id: string, patch: Partial<Scenario>) => {
+    setScenarios(scenarios.map(s => s.id === id ? { ...s, ...patch } : s))
+  }
+  const removeScenario = (id: string) => {
+    setScenarios(scenarios.filter(s => s.id !== id))
+    if (anchorId === id && scenarios.length > 1) {
+      const fallback = scenarios.find(s => s.id !== id)
+      if (fallback) setAnchorId(fallback.id)
+    }
+  }
+  const addScenario = () => {
+    const last = scenarios[scenarios.length - 1]?.clicks ?? 5000
+    const next: Scenario = { id: randomId(), label: `Scenario ${scenarios.length + 1}`, clicks: last * 2 }
+    setScenarios([...scenarios, next])
+    setAnchorId(next.id)
   }
 
   return (
     <Panel padding="p-0" className="overflow-hidden">
-      <div className="px-5 py-3 border-b border-line flex items-center justify-between">
+      <div className="px-5 py-3 border-b border-line flex items-center justify-between flex-wrap gap-3">
         <div>
-          <h2 className="text-base font-semibold text-ink">Side-by-side scenarios</h2>
-          <p className="text-xs text-ink-mute mt-0.5">What happens if you pull back or push beyond the slider value</p>
+          <h2 className="text-base font-semibold text-ink">Scenarios · click-driven</h2>
+          <p className="text-xs text-ink-mute mt-0.5">
+            Edit clicks per row. Budget = clicks × CPC. Click any row to make it the anchor scenario.
+          </p>
         </div>
+        <Button onClick={addScenario} icon={<Plus className="w-4 h-4" />}>
+          Add scenario
+        </Button>
       </div>
       <div className="overflow-x-auto">
         <table className="w-full text-sm">
           <thead>
-            <tr>
-              <th className="text-left px-5 py-3 font-medium text-2xs uppercase tracking-wider text-ink-mute w-44">Scenario</th>
-              {scenarios.map(s => (
-                <th key={s.label} className={cx('text-right px-4 py-3 font-medium relative', s.current && 'bg-canvas-tint')}>
-                  <div className={cx('absolute inset-x-4 top-0 h-[2px]', stripe[s.tone])} />
-                  <div className="flex flex-col items-end gap-0.5">
-                    <span className={cx('text-2xs uppercase tracking-wider font-semibold', s.current ? 'text-ink' : 'text-ink-mute')}>{s.label}</span>
-                    <span className="tnum text-ink font-semibold">{currency(s.budget, ccy)}</span>
-                    {s.current && <Pill tone="ink">current</Pill>}
-                  </div>
-                </th>
-              ))}
+            <tr className="bg-canvas-tint text-ink-mute text-2xs uppercase tracking-wider">
+              <th className="text-left px-5 py-2.5 font-medium w-44">Scenario</th>
+              <th className="text-right px-3 py-2.5 font-medium w-32">Clicks</th>
+              <th className="text-right px-3 py-2.5 font-medium">Impressions</th>
+              <th className="text-right px-3 py-2.5 font-medium">Budget</th>
+              <th className="text-right px-3 py-2.5 font-medium">Orders</th>
+              <th className="text-right px-3 py-2.5 font-medium">Paid sales</th>
+              <th className="text-right px-3 py-2.5 font-medium">Organic</th>
+              <th className="text-right px-3 py-2.5 font-medium">Total sales</th>
+              <th className="text-right px-3 py-2.5 font-medium">ROAS</th>
+              <th className="text-right px-3 py-2.5 font-medium">TACOS</th>
+              <th className="px-3 py-2.5 pr-5 w-8" />
             </tr>
           </thead>
           <tbody>
-            {rows.slice(1).map(row => (
-              <tr key={row.key} className="border-t border-line">
-                <td className="px-5 py-2.5 text-ink-mute">{row.label}</td>
-                {scenarios.map(s => (
-                  <td key={s.label + row.key} className={cx('px-4 py-2.5 text-right', s.current && 'bg-canvas-tint')}>
-                    {row.render(s.result)}
+            {scenarios.map(s => {
+              const r = runFunnelByClicks(inputs, s.clicks)
+              const active = anchorId === s.id
+              return (
+                <tr
+                  key={s.id}
+                  onClick={() => setAnchorId(s.id)}
+                  className={cx(
+                    'border-t border-line cursor-pointer transition-colors',
+                    active ? 'bg-canvas-tint' : 'hover:bg-canvas-tint',
+                  )}
+                >
+                  <td className="px-5 py-2.5">
+                    <div className="flex items-center gap-2">
+                      {active && <span className="w-1.5 h-1.5 rounded-full bg-ink" aria-hidden />}
+                      <input
+                        value={s.label}
+                        onChange={e => updateScenario(s.id, { label: e.target.value })}
+                        onClick={e => e.stopPropagation()}
+                        className="bg-transparent text-sm font-medium text-ink focus:outline-none w-full"
+                      />
+                    </div>
                   </td>
-                ))}
-              </tr>
-            ))}
+                  <td className="px-3 py-2 text-right" onClick={e => e.stopPropagation()}>
+                    <NumberField
+                      value={s.clicks}
+                      onChange={v => updateScenario(s.id, { clicks: v })}
+                      className="w-28 inline-block text-right"
+                    />
+                  </td>
+                  <td className="px-3 py-2.5 text-right tnum text-ink-mute">{r.impressions > 0 ? num(r.impressions) : '—'}</td>
+                  <td className="px-3 py-2.5 text-right tnum text-ink font-medium">{currency(r.budget, ccy)}</td>
+                  <td className="px-3 py-2.5 text-right tnum">{num(r.orders)}</td>
+                  <td className="px-3 py-2.5 text-right tnum">{currency(r.paidSales, ccy)}</td>
+                  <td className="px-3 py-2.5 text-right tnum text-ink-mute">{currency(r.organicLift, ccy)}</td>
+                  <td className="px-3 py-2.5 text-right tnum text-ink font-semibold">{currency(r.totalSales, ccy)}</td>
+                  <td className="px-3 py-2.5 text-right">
+                    <Pill tone={r.roas >= inputs.targetRoas ? 'mint' : r.roas >= inputs.minRoas ? 'peri' : 'blush'}>
+                      {r.roas.toFixed(2)}×
+                    </Pill>
+                  </td>
+                  <td className="px-3 py-2.5 text-right">
+                    <Pill tone={r.tacos > inputs.ceilingTacos ? 'blush' : r.tacos > inputs.primaryTacos ? 'gold' : 'mint'}>
+                      {percent(r.tacos, 1)}
+                    </Pill>
+                  </td>
+                  <td className="px-3 py-2.5 pr-5 text-right" onClick={e => e.stopPropagation()}>
+                    <button
+                      onClick={() => removeScenario(s.id)}
+                      className="text-ink-faint hover:text-[#9c4651] disabled:opacity-30"
+                      disabled={scenarios.length <= 1}
+                      aria-label="Remove scenario"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </td>
+                </tr>
+              )
+            })}
           </tbody>
         </table>
       </div>
@@ -337,25 +430,41 @@ function ScenarioTable({
   )
 }
 
-// ----- What needs to be true ----------
+// ---------- What needs to be true ----------
 
-function WhatNeedsToBeTrue({ result, ccy }: { result: ReturnType<typeof runFunnel>; ccy: Currency }) {
-  const dailyClicks = result.whatNeedsToBeTrue.clicksPerDay
-  const dailyOrders = result.whatNeedsToBeTrue.conversionsPerDay
+function WhatNeedsToBeTrue({
+  result, ccy, anchor,
+}: {
+  result: ReturnType<typeof runFunnelByClicks>
+  ccy: Currency
+  anchor: Scenario
+}) {
   return (
     <Panel>
       <div className="flex items-end justify-between mb-3">
         <div>
           <h2 className="text-base font-semibold text-ink">What needs to be true</h2>
-          <p className="text-xs text-ink-mute mt-0.5">Daily activity the slider implies — anchor for client expectations</p>
+          <p className="text-xs text-ink-mute mt-0.5">
+            Daily activity the <span className="text-ink font-medium">{anchor.label}</span> scenario implies.
+          </p>
         </div>
       </div>
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-        <FactCard label="Clicks per day" value={num(dailyClicks)} />
-        <FactCard label="Orders per day" value={num(dailyOrders)} />
+        <FactCard label="Clicks per day" value={num(result.whatNeedsToBeTrue.clicksPerDay)} />
+        <FactCard label="Orders per day" value={num(result.whatNeedsToBeTrue.conversionsPerDay)} />
         <FactCard label="CPC ceiling" value={currency(result.whatNeedsToBeTrue.cpcCeiling, ccy)} hint="Max CPC to hold primary TACOS" />
         <FactCard label="PDP views / day" value={num(result.whatNeedsToBeTrue.productPagesViewedPerDay)} hint="From paid placements" />
       </div>
+      {result.warnings.length > 0 && (
+        <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-2.5">
+          {result.warnings.map((w, i) => (
+            <div key={i} className="flex items-start gap-2 text-sm rounded-lg bg-accent-goldSoft/50 border border-accent-gold/30 px-3 py-2">
+              <AlertTriangle className="w-3.5 h-3.5 text-[#8b6a18] mt-0.5 shrink-0" />
+              <span className="text-ink">{w}</span>
+            </div>
+          ))}
+        </div>
+      )}
     </Panel>
   )
 }
@@ -370,49 +479,7 @@ function FactCard({ label, value, hint }: { label: string; value: string; hint?:
   )
 }
 
-// ----- Assumptions panel ----------
-
-function AssumptionsPanel({
-  open, onToggle, assumptions, setAssumptions, inputs, ccy, baselineFromSync,
-}: {
-  open: boolean
-  onToggle: () => void
-  assumptions: Assumptions
-  setAssumptions: (a: Assumptions) => void
-  inputs: FunnelInputs
-  ccy: Currency
-  baselineFromSync: boolean
-}) {
-  return (
-    <Panel padding="p-0">
-      <button onClick={onToggle} className="w-full flex items-center justify-between px-5 py-3 hover:bg-canvas-tint">
-        <div className="flex items-center gap-2.5">
-          {open ? <ChevronUp className="w-4 h-4 text-ink-faint" /> : <ChevronDown className="w-4 h-4 text-ink-faint" />}
-          <span className="text-sm font-medium text-ink">Assumptions</span>
-          {baselineFromSync ? <Pill tone="mint">Pulled from synced 30-day data</Pill> : <Pill tone="gold">Sensible defaults</Pill>}
-        </div>
-        <span className="text-2xs text-ink-faint tnum">
-          CPC {currency(assumptions.cpc, ccy)} · CVR {percent(assumptions.cvr, 1)} · AOV {currency(assumptions.aov, ccy)} · lift {percent(assumptions.organicLiftRatio * 100, 0)}
-        </span>
-      </button>
-      {open && (
-        <div className="border-t border-line px-5 py-4 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
-          <NumberField label="Expected CPC" prefix={currencySymbol(ccy)} step="0.05" value={assumptions.cpc} onChange={v => setAssumptions({ ...assumptions, cpc: v })} />
-          <NumberField label="Conversion rate" suffix="%" step="0.1" value={assumptions.cvr} onChange={v => setAssumptions({ ...assumptions, cvr: v })} />
-          <NumberField label="Average order value" prefix={currencySymbol(ccy)} step="0.5" value={assumptions.aov} onChange={v => setAssumptions({ ...assumptions, aov: v })} />
-          <NumberField label="Organic lift (paid → organic)" step="0.05" value={assumptions.organicLiftRatio} onChange={v => setAssumptions({ ...assumptions, organicLiftRatio: v })} />
-        </div>
-      )}
-      {open && (
-        <div className="border-t border-line px-5 py-3 text-xs text-ink-mute">
-          ROAS guardrails sourced from this client's goals — Target {inputs.targetRoas.toFixed(2)}× · Minimum {inputs.minRoas.toFixed(2)}×. TACOS guardrails — Goal {percent(inputs.primaryTacos)} · Ceiling {percent(inputs.ceilingTacos)}. Adjust on the <span className="text-ink">Clients</span> page.
-        </div>
-      )}
-    </Panel>
-  )
-}
-
-// ----- Risk pill ----------
+// ---------- Risk pill ----------
 
 function RiskPill({ result, inputs }: { result: ReturnType<typeof runFunnel>; inputs: FunnelInputs }) {
   const issues: Array<{ tone: 'blush' | 'gold'; msg: string }> = []
@@ -429,7 +496,6 @@ function RiskPill({ result, inputs }: { result: ReturnType<typeof runFunnel>; in
       </Pill>
     )
   }
-
   return (
     <div className="flex items-center gap-2 flex-wrap justify-end max-w-md">
       {issues.map((i, idx) => (
@@ -442,9 +508,10 @@ function RiskPill({ result, inputs }: { result: ReturnType<typeof runFunnel>; in
   )
 }
 
-// ----- utils ----------
+// ---------- utils ----------
 
-function round2(n: number): number {
+function round2(n: number | undefined): number {
+  if (!n || !Number.isFinite(n)) return 0
   return Math.round(n * 100) / 100
 }
 
@@ -457,4 +524,4 @@ function currencySymbol(c: Currency): string {
 }
 
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
-const _unused = [Button]
+const _unused = [ChevronDown, ChevronUp]
