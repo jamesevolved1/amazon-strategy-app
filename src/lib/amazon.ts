@@ -96,6 +96,71 @@ export async function getCurrentAccessToken(): Promise<string | null> {
   return data.session?.access_token ?? null
 }
 
+export interface SyncResultRow {
+  app_client_id: string
+  status: 'ok' | 'error'
+  profiles_found?: number
+  profile_ids?: number[]
+  error?: string
+}
+
+export interface SyncResponse {
+  synced: number
+  total: number
+  results: SyncResultRow[]
+  message?: string
+  error?: string
+}
+
+/**
+ * Triggers the amazon-sync Edge Function for the current user. If
+ * appClientId is provided, only that client is synced; otherwise all
+ * connections.
+ */
+export async function triggerSync(appClientId?: string): Promise<SyncResponse> {
+  if (!isSupabaseConfigured()) {
+    return { synced: 0, total: 0, results: [], error: 'Supabase is not configured.' }
+  }
+  const sb = getSupabase()
+  if (!sb) return { synced: 0, total: 0, results: [], error: 'Supabase client unavailable.' }
+
+  const accessToken = await getCurrentAccessToken()
+  if (!accessToken) return { synced: 0, total: 0, results: [], error: 'Not signed in.' }
+
+  const supabaseUrl = import.meta.env.VITE_SUPABASE_URL as string | undefined
+  if (!supabaseUrl) return { synced: 0, total: 0, results: [], error: 'Missing VITE_SUPABASE_URL.' }
+
+  const url = new URL(`${supabaseUrl}/functions/v1/amazon-sync`)
+  if (appClientId) url.searchParams.set('client_id', appClientId)
+
+  try {
+    const resp = await fetch(url.toString(), {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+      },
+    })
+    const body = await resp.json().catch(() => ({}))
+    if (!resp.ok) {
+      return {
+        synced: 0,
+        total: 0,
+        results: [],
+        error: (body && (body.error || body.message)) || `HTTP ${resp.status}`,
+      }
+    }
+    return body as SyncResponse
+  } catch (e: unknown) {
+    return {
+      synced: 0,
+      total: 0,
+      results: [],
+      error: e instanceof Error ? e.message : String(e),
+    }
+  }
+}
+
 /**
  * React hook: subscribes to the user's Amazon connections.
  * Polls every 30s and on `window.focus` so the UI stays in sync after the user

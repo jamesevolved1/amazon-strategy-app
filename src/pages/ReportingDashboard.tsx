@@ -1,8 +1,10 @@
 import React, { useMemo, useState } from 'react'
 import {
   Plane, ShoppingCart, Target as TargetIcon, TrendingUp, Package, Megaphone, Eye, MousePointerClick, Percent, BarChart3 as BarIcon, ArrowUpRight,
-  RefreshCcw, PlayCircle, Search,
+  RefreshCcw, PlayCircle, Search, CheckCircle2, AlertTriangle,
 } from 'lucide-react'
+import { Spinner } from '../components/ui'
+import { triggerSync, useAmazonConnections } from '../lib/amazon'
 import {
   Area, CartesianGrid, ComposedChart, Legend, Line, ResponsiveContainer, Tooltip, XAxis, YAxis,
 } from 'recharts'
@@ -24,6 +26,39 @@ export function ReportingDashboard() {
   const [campaignFilter, setCampaignFilter] = useState<'all' | 'SP' | 'SB' | 'OTHER'>('all')
   const [campaignPortfolio, setCampaignPortfolio] = useState<string>('all')
   const [campaignSort, setCampaignSort] = useState<'spend' | 'sales' | 'orders' | 'roas'>('spend')
+
+  const { connections, refresh: refreshConnections } = useAmazonConnections()
+  const [syncing, setSyncing] = useState(false)
+  const [syncBanner, setSyncBanner] = useState<{ kind: 'ok' | 'err' | 'partial'; message: string } | null>(null)
+
+  const currentConnection = currentClient
+    ? connections.find(c => c.app_client_id === currentClient.id)
+    : undefined
+
+  const handleSyncNow = async () => {
+    if (!currentClient) return
+    setSyncing(true)
+    setSyncBanner(null)
+    const result = await triggerSync(currentClient.id)
+    setSyncing(false)
+    await refreshConnections()
+    if (result.error) {
+      setSyncBanner({ kind: 'err', message: result.error })
+      return
+    }
+    const row = result.results.find(r => r.app_client_id === currentClient.id)
+    if (row?.status === 'ok') {
+      setSyncBanner({
+        kind: 'ok',
+        message: `Synced — ${row.profiles_found ?? 0} Amazon Ads profile${row.profiles_found === 1 ? '' : 's'} reachable for ${currentClient.name}.`,
+      })
+    } else if (row?.status === 'error') {
+      setSyncBanner({ kind: 'err', message: row.error || 'Sync failed.' })
+    } else {
+      setSyncBanner({ kind: 'partial', message: result.message || 'No connection found for this client.' })
+    }
+    setTimeout(() => setSyncBanner(null), 8000)
+  }
 
   if (!currentClient || !currentBundle) {
     return (
@@ -106,18 +141,47 @@ export function ReportingDashboard() {
   }, [campaigns, campaignFilter, campaignPortfolio, campaignSearch, campaignSort])
 
   const hasData = series.length > 0 || campaigns.length > 0
+  const synced = lastUploadAt(currentBundle)
+  const stale = synced ? (Date.now() - new Date(synced).getTime()) > 86_400_000 : false
 
   if (!hasData) {
     return (
-      <EmptyState
-        title="No synced report data yet"
-        description="Upload a bulk campaign export and business report from the Upload Reports tab to populate this dashboard."
-      />
+      <div className="space-y-5">
+        <AccountHeader
+          client={currentClient}
+          campaignCount={0}
+          synced={synced}
+          history={null}
+          stale={stale}
+          onSyncNow={handleSyncNow}
+          syncing={syncing}
+          connection={currentConnection}
+        />
+        {syncBanner && (
+          <div className={cx(
+            'rounded-xl2 border px-4 py-3 flex items-start gap-3',
+            syncBanner.kind === 'ok' ? 'border-accent-mint/40 bg-accent-mintSoft/60' :
+            syncBanner.kind === 'err' ? 'border-accent-blush/40 bg-accent-blushSoft/60' :
+            'border-accent-gold/40 bg-accent-goldSoft/60',
+          )}>
+            {syncBanner.kind === 'ok' ? <CheckCircle2 className="w-4 h-4 text-[#1f7a4a] mt-0.5 shrink-0" /> :
+              syncBanner.kind === 'err' ? <AlertTriangle className="w-4 h-4 text-[#9c4651] mt-0.5 shrink-0" /> :
+              <AlertTriangle className="w-4 h-4 text-[#8b6a18] mt-0.5 shrink-0" />}
+            <div className="flex-1 min-w-0">
+              <div className="text-sm text-ink">{syncBanner.message}</div>
+            </div>
+            <button onClick={() => setSyncBanner(null)} className="text-ink-faint hover:text-ink text-2xs">Dismiss</button>
+          </div>
+        )}
+        <EmptyState
+          title={currentConnection ? "Live data on the way" : "No synced report data yet"}
+          description={currentConnection
+            ? `${currentClient.name} is connected to Amazon Ads. Click "Sync now" above to verify the credential and pull profile metadata. Performance data ingestion lands in the next iteration.`
+            : `Upload a bulk campaign export and business report from the Upload Reports tab, or click "Connect Amazon Ads" on the Clients page to pull live data.`}
+        />
+      </div>
     )
   }
-
-  const synced = lastUploadAt(currentBundle)
-  const stale = synced ? (Date.now() - new Date(synced).getTime()) > 86_400_000 : false
 
   return (
     <div className="space-y-5">
@@ -127,7 +191,27 @@ export function ReportingDashboard() {
         synced={synced}
         history={series.length ? { start: series[0].date, end: series[series.length - 1].date } : null}
         stale={stale}
+        onSyncNow={handleSyncNow}
+        syncing={syncing}
+        connection={currentConnection}
       />
+
+      {syncBanner && (
+        <div className={cx(
+          'rounded-xl2 border px-4 py-3 flex items-start gap-3',
+          syncBanner.kind === 'ok' ? 'border-accent-mint/40 bg-accent-mintSoft/60' :
+          syncBanner.kind === 'err' ? 'border-accent-blush/40 bg-accent-blushSoft/60' :
+          'border-accent-gold/40 bg-accent-goldSoft/60',
+        )}>
+          {syncBanner.kind === 'ok' ? <CheckCircle2 className="w-4 h-4 text-[#1f7a4a] mt-0.5 shrink-0" /> :
+            syncBanner.kind === 'err' ? <AlertTriangle className="w-4 h-4 text-[#9c4651] mt-0.5 shrink-0" /> :
+            <AlertTriangle className="w-4 h-4 text-[#8b6a18] mt-0.5 shrink-0" />}
+          <div className="flex-1 min-w-0">
+            <div className="text-sm text-ink">{syncBanner.message}</div>
+          </div>
+          <button onClick={() => setSyncBanner(null)} className="text-ink-faint hover:text-ink text-2xs">Dismiss</button>
+        </div>
+      )}
 
       <div className="flex items-end justify-between gap-4 flex-wrap">
         <div>
@@ -224,14 +308,19 @@ export function ReportingDashboard() {
 }
 
 function AccountHeader({
-  client, campaignCount, synced, history, stale,
+  client, campaignCount, synced, history, stale, onSyncNow, syncing, connection,
 }: {
   client: import('../types').Client
   campaignCount: number
   synced: string | null
   history: { start: string; end: string } | null
   stale: boolean
+  onSyncNow: () => void
+  syncing: boolean
+  connection?: { last_synced_at: string | null; amazon_profile_ids: number[] | null } | undefined
 }) {
+  const liveSynced = connection?.last_synced_at ?? synced
+  const profileCount = connection?.amazon_profile_ids?.length ?? 0
   return (
     <div className="flex items-start justify-between gap-4 flex-wrap">
       <div className="flex items-center gap-3">
@@ -242,9 +331,10 @@ function AccountHeader({
           <div className="text-lg font-semibold text-ink leading-tight">{client.name}</div>
           <div className="text-xs text-ink-mute mt-0.5">
             {client.marketplace} · {client.currency} · {num(campaignCount)} campaigns
+            {connection && profileCount > 0 && <> · {num(profileCount)} Amazon profile{profileCount === 1 ? '' : 's'}</>}
           </div>
           <div className="text-2xs text-ink-faint mt-1">
-            Last sync: {timestamp(synced ?? undefined)}
+            Last sync: {timestamp(liveSynced ?? undefined)}
             {history && <> · History: {history.start} → {history.end} ({daysBetween(history.start, history.end)} days)</>}
           </div>
         </div>
@@ -256,9 +346,15 @@ function AccountHeader({
         </Pill>
         <Pill tone={stale ? 'gold' : 'mint'} className="px-3 py-1">
           <span className={cx('w-1.5 h-1.5 rounded-full', stale ? 'bg-[#c98a1a]' : 'bg-[#1f7a4a]')} />
-          {stale ? `Out of date · synced ${relativeTime(synced ?? undefined)}` : `Synced ${relativeTime(synced ?? undefined)}`}
+          {stale ? `Out of date · synced ${relativeTime(liveSynced ?? undefined)}` : `Synced ${relativeTime(liveSynced ?? undefined)}`}
         </Pill>
-        <Button icon={<RefreshCcw className="w-4 h-4" />}>Sync now</Button>
+        <Button
+          onClick={onSyncNow}
+          disabled={syncing || !connection}
+          icon={syncing ? <Spinner size={14} /> : <RefreshCcw className="w-4 h-4" />}
+        >
+          {syncing ? 'Syncing…' : 'Sync now'}
+        </Button>
       </div>
     </div>
   )
