@@ -13,7 +13,7 @@ import { Panel, Pill, SegmentedControl, EmptyState, Button, cx, Delta } from '..
 import { KPICard } from '../components/KPICard'
 import { compact, currency, dateRangeLabel, daysBetween, deltaPct, num, percent, relativeTime, timestamp } from '../lib/format'
 import {
-  adProductSummary, totalsFromSeries, type ReportingTotals,
+  adProductSummary, totalsFromSeries, projectCurrentMonth, type ReportingTotals, type MonthProjection,
 } from '../utils/pnl'
 import { customRange, resolveRange, sliceSeries, type RangePreset } from '../utils/dateRange'
 import type { BulkCampaignData, BusinessReportData } from '../utils/parsers'
@@ -186,6 +186,7 @@ export function ReportingDashboard() {
     return bulk?.campaigns ?? []
   }, [syncedCampaigns, bulk])
   const adSummary = useMemo(() => adProductSummary(campaigns), [campaigns])
+  const projection = useMemo(() => projectCurrentMonth(series, currentBundle.goals), [series, currentBundle.goals])
 
   const portfolios = useMemo(() => {
     const set = new Set<string>()
@@ -321,6 +322,7 @@ export function ReportingDashboard() {
                 { id: '7d', label: 'Last 7 days' },
                 { id: '14d', label: 'Last 14 days' },
                 { id: '30d', label: 'Last 30 days' },
+                { id: 'mtd', label: 'MTD' },
                 { id: 'all', label: 'All synced' },
                 { id: 'custom', label: 'Custom' },
               ]}
@@ -410,6 +412,8 @@ export function ReportingDashboard() {
           </div>
         </Panel>
       </div>
+
+      {projection && <ProjectionPanel projection={projection} ccy={currentClient.currency} goals={currentBundle.goals} />}
 
       <SalesMix totals={totals} ccy={currentClient.currency} />
 
@@ -653,6 +657,113 @@ function ChartArea({ data, ccy }: { data: DailySeriesPoint[]; ccy: import('../ty
           <Line yAxisId="right" type="monotone" dataKey={(d: DailySeriesPoint) => d.cvr ?? 0} name="CVR" stroke="#1f9d6b" strokeWidth={2} dot={false} />
         </ComposedChart>
       </ResponsiveContainer>
+    </div>
+  )
+}
+
+function ProjectionPanel({
+  projection, ccy, goals,
+}: {
+  projection: MonthProjection
+  ccy: import('../types').Currency
+  goals: import('../types').ClientGoals
+}) {
+  const p = projection
+  const salesLabel = p.hasTotalSales ? 'Total sales' : 'Ad sales'
+  const projSales = p.hasTotalSales ? p.projected.totalSales : p.projected.adSales
+
+  const spendPace = p.pace.spendVsBudgetPct
+  const salesPace = p.pace.salesVsGoalPct
+
+  return (
+    <Panel>
+      <div className="flex items-end justify-between gap-3 mb-4 flex-wrap">
+        <div>
+          <h2 className="text-base font-semibold text-ink">Projected month-end · {p.monthLabel}</h2>
+          <p className="text-xs text-ink-mute mt-0.5">
+            Run-rate from {num(p.elapsedDays)} day{p.elapsedDays === 1 ? '' : 's'} of data, extrapolated across {num(p.daysInMonth)} days · {num(p.daysRemaining)} days remaining
+          </p>
+        </div>
+        <Pill tone="lavender">Pacing forecast</Pill>
+      </div>
+
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <ProjStat
+          label="Projected ad spend"
+          tone="peri"
+          value={currency(p.projected.spend, ccy, true)}
+          mtd={`${currency(p.mtd.spend, ccy, true)} MTD`}
+          pace={Number.isFinite(spendPace)
+            ? { pct: spendPace, label: `${percent(spendPace, 0)} of budget`, good: spendPace <= 100 }
+            : (goals.monthlyAdBudget > 0 ? undefined : { pct: NaN, label: 'no budget set', good: true })}
+        />
+        <ProjStat
+          label={`Projected ${salesLabel.toLowerCase()}`}
+          tone="mint"
+          value={currency(projSales, ccy, true)}
+          mtd={`${currency(p.hasTotalSales ? p.mtd.totalSales : p.mtd.adSales, ccy, true)} MTD`}
+          pace={Number.isFinite(salesPace)
+            ? { pct: salesPace, label: `${percent(salesPace, 0)} of goal`, good: salesPace >= 100 }
+            : undefined}
+        />
+        <ProjStat
+          label="Projected orders"
+          tone="lavender"
+          value={num(p.projected.orders)}
+          mtd={`${num(p.mtd.orders)} MTD`}
+        />
+        {p.hasTotalSales ? (
+          <ProjStat
+            label="Projected TACOS"
+            tone={p.projected.tacos > goals.acceptableTacosCeiling ? 'blush' : p.projected.tacos > goals.primaryTacosGoal ? 'gold' : 'mint'}
+            value={percent(p.projected.tacos, 1)}
+            mtd={`ROAS ${p.projected.roas.toFixed(2)}×`}
+          />
+        ) : (
+          <ProjStat
+            label="Projected ROAS"
+            tone={p.projected.roas >= goals.targetRoas ? 'mint' : p.projected.roas >= goals.minimumAcceptableRoas ? 'peri' : 'blush'}
+            value={`${p.projected.roas.toFixed(2)}×`}
+            mtd={`target ${goals.targetRoas.toFixed(2)}×`}
+          />
+        )}
+      </div>
+
+      {!p.hasTotalSales && (
+        <p className="mt-3 text-2xs text-ink-faint">
+          Sales projection uses ad-attributed sales. Upload a Business Report (organic + total sales) for a full-account TACOS projection.
+        </p>
+      )}
+    </Panel>
+  )
+}
+
+function ProjStat({
+  label, value, mtd, tone, pace,
+}: {
+  label: string
+  value: React.ReactNode
+  mtd: string
+  tone: 'peri' | 'mint' | 'gold' | 'lavender' | 'blush'
+  pace?: { pct: number; label: string; good: boolean }
+}) {
+  const stripe: Record<string, string> = {
+    peri: 'bg-accent-peri', mint: 'bg-accent-mint', gold: 'bg-accent-gold', lavender: 'bg-accent-lavender', blush: 'bg-accent-blush',
+  }
+  return (
+    <div className="relative rounded-lg border border-line p-3">
+      <div className={cx('absolute left-3 right-3 top-0 h-[2px] rounded-b-full', stripe[tone])} />
+      <div className="text-2xs uppercase tracking-wider text-ink-mute font-semibold">{label}</div>
+      <div className="mt-1.5 tnum text-xl font-semibold text-ink">{value}</div>
+      <div className="mt-1 flex items-center gap-1.5 flex-wrap">
+        <span className="text-2xs text-ink-faint tnum">{mtd}</span>
+        {pace && Number.isFinite(pace.pct) && (
+          <Pill tone={pace.good ? 'mint' : 'gold'}>{pace.label}</Pill>
+        )}
+        {pace && !Number.isFinite(pace.pct) && (
+          <span className="text-2xs text-ink-faint">{pace.label}</span>
+        )}
+      </div>
     </div>
   )
 }

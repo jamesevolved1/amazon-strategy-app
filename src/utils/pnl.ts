@@ -343,6 +343,107 @@ export function adProductSummary(campaigns: CampaignRow[]) {
   return groups
 }
 
+// ---------- Month projection ----------
+
+export interface MonthProjection {
+  monthLabel: string
+  daysInMonth: number
+  elapsedDays: number       // days this month that actually have data
+  daysRemaining: number
+  hasTotalSales: boolean
+  mtd: { spend: number; adSales: number; totalSales: number; orders: number }
+  perDay: { spend: number; adSales: number; totalSales: number; orders: number }
+  projected: {
+    spend: number
+    adSales: number
+    totalSales: number
+    orders: number
+    roas: number
+    tacos: number          // NaN when total sales unavailable
+  }
+  goals: { monthlyAdBudget: number; desiredSales: number }
+  pace: {
+    spendVsBudgetPct: number  // projected spend / budget × 100
+    salesVsGoalPct: number    // projected sales / desired × 100
+  }
+}
+
+/**
+ * Extrapolates the current month's run-rate to a full-month projection.
+ * Uses only complete days (today is excluded). Run-rate is computed over the
+ * days that actually carry data, then projected across the whole month.
+ * Returns null if there isn't at least one complete day of data this month.
+ */
+export function projectCurrentMonth(
+  series: DailySeriesPoint[],
+  goals: ClientGoals,
+  now: Date = new Date(),
+): MonthProjection | null {
+  if (!series || series.length === 0) return null
+  const y = now.getUTCFullYear(), mo = now.getUTCMonth()
+  const monthStart = isoUTC(y, mo, 1)
+  const todayDay = now.getUTCDate()
+  const completeDays = todayDay - 1 // exclude today
+  if (completeDays < 1) return null  // too early in the month to project
+  const monthEnd = isoUTC(y, mo, completeDays)
+  const daysInMonth = new Date(Date.UTC(y, mo + 1, 0)).getUTCDate()
+
+  const pts = series.filter(p => p.date >= monthStart && p.date <= monthEnd)
+  if (pts.length === 0) return null
+
+  let spend = 0, adSales = 0, totalSales = 0, orders = 0, hasTotal = false
+  for (const p of pts) {
+    spend += p.spend
+    adSales += p.adSales
+    orders += p.orders
+    if (p.totalSales != null) { totalSales += p.totalSales; hasTotal = true }
+  }
+  const elapsedDays = pts.length
+  const effSales = hasTotal ? totalSales : adSales
+
+  const perDay = {
+    spend: spend / elapsedDays,
+    adSales: adSales / elapsedDays,
+    totalSales: effSales / elapsedDays,
+    orders: orders / elapsedDays,
+  }
+  const projSpend = perDay.spend * daysInMonth
+  const projAdSales = perDay.adSales * daysInMonth
+  const projTotalSales = perDay.totalSales * daysInMonth
+  const projOrders = perDay.orders * daysInMonth
+  const projRoas = projSpend > 0 ? projAdSales / projSpend : 0
+  const projTacos = hasTotal && projTotalSales > 0 ? (projSpend / projTotalSales) * 100 : NaN
+
+  const desiredSales = goals.currentProjectedMonthlySales || goals.desiredNext30DaySales || 0
+
+  return {
+    monthLabel: new Date(Date.UTC(y, mo, 1)).toLocaleString('en-US', { month: 'long', year: 'numeric', timeZone: 'UTC' }),
+    daysInMonth,
+    elapsedDays,
+    daysRemaining: daysInMonth - completeDays,
+    hasTotalSales: hasTotal,
+    mtd: { spend, adSales, totalSales: effSales, orders },
+    perDay,
+    projected: {
+      spend: projSpend,
+      adSales: projAdSales,
+      totalSales: projTotalSales,
+      orders: projOrders,
+      roas: projRoas,
+      tacos: projTacos,
+    },
+    goals: { monthlyAdBudget: goals.monthlyAdBudget, desiredSales },
+    pace: {
+      spendVsBudgetPct: goals.monthlyAdBudget > 0 ? (projSpend / goals.monthlyAdBudget) * 100 : NaN,
+      salesVsGoalPct: desiredSales > 0 ? (projTotalSales / desiredSales) * 100 : NaN,
+    },
+  }
+}
+
+function isoUTC(y: number, mo: number, day: number): string {
+  return `${y}-${String(mo + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`
+}
+
 // ---------- Goal realism ----------
 
 export interface GoalRealism {
