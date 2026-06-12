@@ -17,6 +17,45 @@ export const AMAZON_REDIRECT_URI =
 /** Ads API scopes we request when a client authorizes. */
 export const AMAZON_ADS_SCOPES = ['advertising::campaign_management']
 
+export interface PendingReport {
+  reportId: string
+  profileId: number
+  adProduct: 'SP' | 'SB' | 'SD'
+  status: 'PENDING' | 'IN_PROGRESS' | 'COMPLETED' | 'FAILED' | 'INGESTED'
+  requestedAt: string
+  startDate: string
+  endDate: string
+  error?: string
+}
+
+export interface SyncedCampaign {
+  campaign: string
+  campaignId?: string
+  type: 'SP' | 'SB' | 'SD' | 'OTHER'
+  portfolioId?: string
+  impressions: number
+  clicks: number
+  spend: number
+  adSales: number
+  orders: number
+  ctr: number
+  cvr: number
+  roas: number
+  acos: number
+  cpc: number
+}
+
+export interface SyncedDaily {
+  date: string
+  impressions: number
+  clicks: number
+  spend: number
+  adSales: number
+  orders: number
+  ctr?: number
+  cvr?: number
+}
+
 export interface AmazonConnection {
   id: string
   app_client_id: string
@@ -25,6 +64,9 @@ export interface AmazonConnection {
   access_token: string | null
   access_token_expires_at: string | null
   amazon_profile_ids: number[] | null
+  pending_reports: PendingReport[]
+  synced_data: { campaigns: SyncedCampaign[]; daily?: SyncedDaily[] } | null
+  synced_data_at: string | null
   last_synced_at: string | null
   last_sync_error: string | null
   created_at: string
@@ -101,11 +143,16 @@ export interface SyncResultRow {
   status: 'ok' | 'error'
   profiles_found?: number
   profile_ids?: number[]
+  pending_count?: number
+  ingested_reports?: number
+  campaigns_after_sync?: number
+  all_done?: boolean
   error?: string
 }
 
 export interface SyncResponse {
   synced: number
+  pending?: number
   total: number
   results: SyncResultRow[]
   message?: string

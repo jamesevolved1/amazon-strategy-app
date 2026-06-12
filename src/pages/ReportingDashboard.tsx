@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react'
+import React, { useEffect, useMemo, useRef, useState } from 'react'
 import {
   Plane, ShoppingCart, Target as TargetIcon, TrendingUp, Package, Megaphone, Eye, MousePointerClick, Percent, BarChart3 as BarIcon, ArrowUpRight,
   RefreshCcw, PlayCircle, Search, CheckCircle2, AlertTriangle,
@@ -35,6 +35,8 @@ export function ReportingDashboard() {
     ? connections.find(c => c.app_client_id === currentClient.id)
     : undefined
 
+  const pendingCount = currentConnection?.pending_reports?.length ?? 0
+
   const handleSyncNow = async () => {
     if (!currentClient) return
     setSyncing(true)
@@ -48,10 +50,15 @@ export function ReportingDashboard() {
     }
     const row = result.results.find(r => r.app_client_id === currentClient.id)
     if (row?.status === 'ok') {
-      setSyncBanner({
-        kind: 'ok',
-        message: `Synced — ${row.profiles_found ?? 0} Amazon Ads profile${row.profiles_found === 1 ? '' : 's'} reachable for ${currentClient.name}.`,
-      })
+      const msg =
+        row.all_done
+          ? `Synced — ${row.campaigns_after_sync ?? 0} campaigns across ${row.profiles_found ?? 0} Amazon profile${row.profiles_found === 1 ? '' : 's'}.`
+          : row.ingested_reports
+            ? `Synced — ingested ${row.ingested_reports} report${row.ingested_reports === 1 ? '' : 's'} · ${row.pending_count ?? 0} still in flight at Amazon.`
+            : row.pending_count
+              ? `Requested ${row.pending_count} reports from Amazon. They take 1-15 minutes to generate — dashboard will auto-refresh.`
+              : `Synced — ${row.profiles_found ?? 0} profile${row.profiles_found === 1 ? '' : 's'} reachable for ${currentClient.name}.`
+      setSyncBanner({ kind: 'ok', message: msg })
     } else if (row?.status === 'error') {
       setSyncBanner({ kind: 'err', message: row.error || 'Sync failed.' })
     } else {
@@ -59,6 +66,37 @@ export function ReportingDashboard() {
     }
     setTimeout(() => setSyncBanner(null), 8000)
   }
+
+  // Auto-poll: while reports are in flight, hit Sync every 30s without spinner
+  // spam so the dashboard fills in as reports finish at Amazon's end.
+  const autoPollRef = useRef<NodeJS.Timeout | null>(null)
+  useEffect(() => {
+    if (autoPollRef.current) {
+      clearInterval(autoPollRef.current)
+      autoPollRef.current = null
+    }
+    if (!currentClient || pendingCount === 0) return
+    autoPollRef.current = setInterval(async () => {
+      if (!currentClient) return
+      const result = await triggerSync(currentClient.id)
+      await refreshConnections()
+      const row = result.results.find(r => r.app_client_id === currentClient.id)
+      if (row?.pending_count === 0 && row?.campaigns_after_sync) {
+        setSyncBanner({
+          kind: 'ok',
+          message: `Live data ready — ${row.campaigns_after_sync} campaigns ingested for ${currentClient.name}.`,
+        })
+        setTimeout(() => setSyncBanner(null), 8000)
+      }
+    }, 30_000)
+    return () => {
+      if (autoPollRef.current) {
+        clearInterval(autoPollRef.current)
+        autoPollRef.current = null
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingCount, currentClient?.id])
 
   if (!currentClient || !currentBundle) {
     return (
@@ -71,8 +109,10 @@ export function ReportingDashboard() {
 
   const bulk = currentBundle.reports.bulkCampaigns?.parsed as BulkCampaignData | undefined
   const biz = currentBundle.reports.businessReport?.parsed as BusinessReportData | undefined
+  const syncedCampaigns = currentConnection?.synced_data?.campaigns ?? null
+  const syncedDaily = currentConnection?.synced_data?.daily ?? null
 
-  // Build a merged daily series from bulk daily + business report daily.
+  // Build a merged daily series from bulk daily + business report daily + synced API daily.
   const series: DailySeriesPoint[] = useMemo(() => {
     const map = new Map<string, DailySeriesPoint>()
     const ingest = (arr: DailySeriesPoint[] | undefined) => {
@@ -89,6 +129,19 @@ export function ReportingDashboard() {
     }
     ingest(bulk?.daily)
     ingest(biz?.daily)
+    // Synced API data takes priority — overwrite from synced where present.
+    if (syncedDaily) {
+      for (const p of syncedDaily) {
+        map.set(p.date, {
+          date: p.date,
+          spend: p.spend,
+          adSales: p.adSales,
+          orders: p.orders,
+          impressions: p.impressions,
+          clicks: p.clicks,
+        })
+      }
+    }
     return Array.from(map.values())
       .map(p => ({
         ...p,
@@ -96,7 +149,7 @@ export function ReportingDashboard() {
         cvr: p.clicks ? (p.orders / p.clicks) * 100 : 0,
       }))
       .sort((a, b) => a.date.localeCompare(b.date))
-  }, [bulk, biz])
+  }, [bulk, biz, syncedDaily])
 
   const range = useMemo(() => resolveRange(series, preset), [series, preset])
   const slice = range ? sliceSeries(series, range.start, range.end) : []
@@ -104,7 +157,29 @@ export function ReportingDashboard() {
   const totals = useMemo(() => totalsFromSeries(slice, range?.days), [slice, range])
   const prevTotals = useMemo(() => totalsFromSeries(prev, range ? daysBetween(range.prevStart, range.prevEnd) : 0), [prev, range])
 
-  const campaigns = bulk?.campaigns ?? []
+  // Prefer synced campaigns from Amazon API; fall back to uploaded bulk export
+  const campaigns: CampaignRow[] = useMemo(() => {
+    if (syncedCampaigns && syncedCampaigns.length > 0) {
+      return syncedCampaigns.map(c => ({
+        campaign: c.campaign,
+        campaignId: c.campaignId,
+        type: c.type,
+        portfolioId: c.portfolioId,
+        portfolio: undefined,
+        impressions: c.impressions,
+        clicks: c.clicks,
+        spend: c.spend,
+        adSales: c.adSales,
+        orders: c.orders,
+        ctr: c.ctr,
+        cvr: c.cvr,
+        roas: c.roas,
+        acos: c.acos,
+        cpc: c.cpc,
+      }))
+    }
+    return bulk?.campaigns ?? []
+  }, [syncedCampaigns, bulk])
   const adSummary = useMemo(() => adProductSummary(campaigns), [campaigns])
 
   const portfolios = useMemo(() => {
@@ -143,6 +218,7 @@ export function ReportingDashboard() {
   const hasData = series.length > 0 || campaigns.length > 0
   const synced = lastUploadAt(currentBundle)
   const stale = synced ? (Date.now() - new Date(synced).getTime()) > 86_400_000 : false
+  const inFlightReports = pendingCount > 0
 
   if (!hasData) {
     return (
@@ -174,10 +250,20 @@ export function ReportingDashboard() {
           </div>
         )}
         <EmptyState
-          title={currentConnection ? "Live data on the way" : "No synced report data yet"}
-          description={currentConnection
-            ? `${currentClient.name} is connected to Amazon Ads. Click "Sync now" above to verify the credential and pull profile metadata. Performance data ingestion lands in the next iteration.`
-            : `Upload a bulk campaign export and business report from the Upload Reports tab, or click "Connect Amazon Ads" on the Clients page to pull live data.`}
+          title={
+            inFlightReports
+              ? `${pendingCount} report${pendingCount === 1 ? '' : 's'} in flight at Amazon`
+              : currentConnection
+                ? "Live data on the way"
+                : "No synced report data yet"
+          }
+          description={
+            inFlightReports
+              ? `Amazon is generating campaign reports for ${currentClient.name}. This typically takes 1-15 minutes per report. The dashboard polls every 30 seconds and will fill in automatically — no need to click Sync again.`
+              : currentConnection
+                ? `${currentClient.name} is connected to Amazon Ads. Click "Sync now" above to request campaign reports.`
+                : `Upload a bulk campaign export and business report from the Upload Reports tab, or click "Connect Amazon Ads" on the Clients page to pull live data.`
+          }
         />
       </div>
     )
