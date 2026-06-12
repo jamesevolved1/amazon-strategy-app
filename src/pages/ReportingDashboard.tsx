@@ -15,13 +15,15 @@ import { compact, currency, dateRangeLabel, daysBetween, deltaPct, num, percent,
 import {
   adProductSummary, totalsFromSeries, type ReportingTotals,
 } from '../utils/pnl'
-import { resolveRange, sliceSeries, type RangePreset } from '../utils/dateRange'
+import { customRange, resolveRange, sliceSeries, type RangePreset } from '../utils/dateRange'
 import type { BulkCampaignData, BusinessReportData } from '../utils/parsers'
 import type { CampaignRow, DailySeriesPoint } from '../types'
 
 export function ReportingDashboard() {
   const { currentClient, currentBundle } = useStore()
   const [preset, setPreset] = useState<RangePreset>('7d')
+  const [customStart, setCustomStart] = useState('')
+  const [customEnd, setCustomEnd] = useState('')
   const [campaignSearch, setCampaignSearch] = useState('')
   const [campaignFilter, setCampaignFilter] = useState<'all' | 'SP' | 'SB' | 'OTHER'>('all')
   const [campaignPortfolio, setCampaignPortfolio] = useState<string>('all')
@@ -151,7 +153,10 @@ export function ReportingDashboard() {
       .sort((a, b) => a.date.localeCompare(b.date))
   }, [bulk, biz, syncedDaily])
 
-  const range = useMemo(() => resolveRange(series, preset), [series, preset])
+  const range = useMemo(
+    () => preset === 'custom' ? customRange(customStart, customEnd) : resolveRange(series, preset),
+    [series, preset, customStart, customEnd],
+  )
   const slice = range ? sliceSeries(series, range.start, range.end) : []
   const prev = range ? sliceSeries(series, range.prevStart, range.prevEnd) : []
   const totals = useMemo(() => totalsFromSeries(slice, range?.days), [slice, range])
@@ -165,7 +170,7 @@ export function ReportingDashboard() {
         campaignId: c.campaignId,
         type: c.type,
         portfolioId: c.portfolioId,
-        portfolio: undefined,
+        portfolio: c.portfolio,
         impressions: c.impressions,
         clicks: c.clicks,
         spend: c.spend,
@@ -299,23 +304,56 @@ export function ReportingDashboard() {
         </div>
       )}
 
-      <div className="flex items-end justify-between gap-4 flex-wrap">
+      <div className="flex items-start justify-between gap-4 flex-wrap">
         <div>
-          <SegmentedControl
-            value={preset}
-            onChange={setPreset}
-            options={[
-              { id: '7d', label: 'Last 7 days' },
-              { id: '14d', label: 'Last 14 days' },
-              { id: '30d', label: 'Last 30 days' },
-              { id: 'all', label: 'All synced' },
-            ]}
-          />
-          {range && (
+          <div className="flex items-center gap-3 flex-wrap">
+            <SegmentedControl
+              value={preset}
+              onChange={(p) => {
+                setPreset(p)
+                // Seed the custom inputs from the synced data bounds the first time.
+                if (p === 'custom' && (!customStart || !customEnd) && series.length > 0) {
+                  setCustomStart(series[0].date)
+                  setCustomEnd(series[series.length - 1].date)
+                }
+              }}
+              options={[
+                { id: '7d', label: 'Last 7 days' },
+                { id: '14d', label: 'Last 14 days' },
+                { id: '30d', label: 'Last 30 days' },
+                { id: 'all', label: 'All synced' },
+                { id: 'custom', label: 'Custom' },
+              ]}
+            />
+            {preset === 'custom' && (
+              <div className="flex items-center gap-2">
+                <input
+                  type="date"
+                  value={customStart}
+                  min={series.length ? series[0].date : undefined}
+                  max={customEnd || (series.length ? series[series.length - 1].date : undefined)}
+                  onChange={e => setCustomStart(e.target.value)}
+                  className="rounded-lg border border-line bg-canvas-panel text-xs px-2.5 py-1.5 focus:outline-none focus:ring-2 focus:ring-ink/15"
+                />
+                <span className="text-ink-faint text-xs">→</span>
+                <input
+                  type="date"
+                  value={customEnd}
+                  min={customStart || (series.length ? series[0].date : undefined)}
+                  max={series.length ? series[series.length - 1].date : undefined}
+                  onChange={e => setCustomEnd(e.target.value)}
+                  className="rounded-lg border border-line bg-canvas-panel text-xs px-2.5 py-1.5 focus:outline-none focus:ring-2 focus:ring-ink/15"
+                />
+              </div>
+            )}
+          </div>
+          {range ? (
             <div className="mt-2 text-xs text-ink-mute tnum">
               {range.start} → {range.end} · <span className="text-ink-faint">{range.days} days of data</span>
             </div>
-          )}
+          ) : preset === 'custom' ? (
+            <div className="mt-2 text-xs text-ink-faint">Pick a start and end date to view a custom range.</div>
+          ) : null}
         </div>
       </div>
 

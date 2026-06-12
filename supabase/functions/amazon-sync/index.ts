@@ -24,8 +24,9 @@ const AMAZON_ADS_API = "https://advertising-api.amazon.com"
 // hundred KB to a few MB; 4 is conservative.
 const MAX_DOWNLOADS_PER_RUN = 4
 
-// Number of days back to request. 30 keeps reports fast for most accounts.
-const REPORT_DAYS_BACK = 30
+// Number of days back to request. 60 gives enough history for custom date
+// ranges while keeping report generation reasonably fast.
+const REPORT_DAYS_BACK = 60
 
 // Map our short ad-product label to Amazon's enum + report type.
 const AD_PRODUCTS = [
@@ -187,6 +188,20 @@ async function syncOne(
   let synced = conn.synced_data ?? { campaigns: [], daily: [] }
   if (ingestedRows.length > 0) {
     synced = mergeReportRows(synced, ingestedRows)
+    // Enrich campaigns with portfolio names. The report columns can't carry
+    // portfolioId (Amazon rejects it), so we fetch the campaign→portfolio
+    // mapping separately. Resilient: failure leaves campaigns unenriched.
+    try {
+      const portfolioMap = await buildPortfolioMap(profileIds, accessToken, adsClientId)
+      if (portfolioMap.size > 0) {
+        synced.campaigns = synced.campaigns.map((c: any) => {
+          const name = c.campaignId ? portfolioMap.get(String(c.campaignId)) : undefined
+          return name ? { ...c, portfolio: name } : c
+        })
+      }
+    } catch (e) {
+      console.error("portfolio enrich failed", e instanceof Error ? e.message : String(e))
+    }
   }
 
   // 5. If no pending reports left, request a fresh batch
@@ -268,6 +283,77 @@ async function listProfiles(accessToken: string, clientId: string): Promise<numb
   if (!resp.ok) throw new Error(`Profile list failed: ${resp.status}`)
   const profiles = await resp.json() as Array<{ profileId: number }>
   return profiles.map(p => p.profileId)
+}
+
+// ---------- Portfolio mapping ----------
+//
+// Reports can't carry portfolioId, so we build a campaignId -> portfolio name
+// map from the v2 portfolios endpoint (id -> name) joined with the SP
+// campaigns list (campaignId -> portfolioId). Covers Sponsored Products, where
+// portfolios are most commonly used. Resilient — every call is wrapped so a
+// failure for one profile/product doesn't break the others.
+async function buildPortfolioMap(
+  profileIds: number[],
+  accessToken: string,
+  clientId: string,
+): Promise<Map<string, string>> {
+  const campaignToPortfolio = new Map<string, string>()
+
+  for (const profileId of profileIds) {
+    try {
+      // 1. portfolioId -> name
+      const portResp = await fetch(`${AMAZON_ADS_API}/v2/portfolios`, {
+        headers: {
+          "Authorization": `Bearer ${accessToken}`,
+          "Amazon-Advertising-API-ClientId": clientId,
+          "Amazon-Advertising-API-Scope": String(profileId),
+          "Accept": "application/json",
+        },
+      })
+      if (!portResp.ok) continue
+      const portfolios = await portResp.json() as Array<{ portfolioId: number; name: string }>
+      if (!Array.isArray(portfolios) || portfolios.length === 0) continue
+      const portfolioName = new Map(portfolios.map(p => [String(p.portfolioId), p.name]))
+
+      // 2. campaignId -> portfolioId (SP). Paginate up to a few pages.
+      let nextToken: string | undefined = undefined
+      let pages = 0
+      do {
+        const body: Record<string, unknown> = {
+          maxResults: 500,
+          stateFilter: { include: ["ENABLED", "PAUSED", "ARCHIVED"] },
+        }
+        if (nextToken) body.nextToken = nextToken
+        const campResp = await fetch(`${AMAZON_ADS_API}/sp/campaigns/list`, {
+          method: "POST",
+          headers: {
+            "Authorization": `Bearer ${accessToken}`,
+            "Amazon-Advertising-API-ClientId": clientId,
+            "Amazon-Advertising-API-Scope": String(profileId),
+            "Content-Type": "application/vnd.spCampaign.v3+json",
+            "Accept": "application/vnd.spCampaign.v3+json",
+          },
+          body: JSON.stringify(body),
+        })
+        if (!campResp.ok) break
+        const data = await campResp.json() as {
+          campaigns?: Array<{ campaignId: string | number; portfolioId?: string | number }>
+          nextToken?: string
+        }
+        for (const c of data.campaigns ?? []) {
+          const pid = c.portfolioId != null ? String(c.portfolioId) : ""
+          const name = pid ? portfolioName.get(pid) : undefined
+          if (name) campaignToPortfolio.set(String(c.campaignId), name)
+        }
+        nextToken = data.nextToken
+        pages++
+      } while (nextToken && pages < 6)
+    } catch (e) {
+      console.error("portfolio map profile", profileId, e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  return campaignToPortfolio
 }
 
 // ---------- Report request ----------

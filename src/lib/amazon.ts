@@ -33,6 +33,7 @@ export interface SyncedCampaign {
   campaignId?: string
   type: 'SP' | 'SB' | 'SD' | 'OTHER'
   portfolioId?: string
+  portfolio?: string
   impressions: number
   clicks: number
   spend: number
