@@ -1,10 +1,12 @@
-import React, { useMemo, useState } from 'react'
+import React, { useEffect, useMemo, useState } from 'react'
 import { Plus, Trash2, Pencil, Check, X } from 'lucide-react'
 import { Panel, Pill, Button, EmptyState, TextField, NumberField, cx } from '../components/ui'
+import { AmazonConnectButton, ConnectionResultBanner } from '../components/AmazonConnectButton'
 import { useStore } from '../lib/store'
 import { currency, num, percent } from '../lib/format'
 import { evaluateGoalRealism, totalsFromSeries } from '../utils/pnl'
 import { resolveRange, sliceSeries } from '../utils/dateRange'
+import { useAmazonConnections } from '../lib/amazon'
 import type { BulkCampaignData } from '../utils/parsers'
 import type { Currency, DailySeriesPoint, Marketplace } from '../types'
 
@@ -21,6 +23,45 @@ export function Clients() {
   const [renameVal, setRenameVal] = useState('')
   const [deleteId, setDeleteId] = useState<string | null>(null)
   const [deleteConfirm, setDeleteConfirm] = useState('')
+
+  // Amazon Ads connections, keyed by app_client_id
+  const { connections, refresh: refreshConnections } = useAmazonConnections()
+  const connectionByClient = useMemo(() => {
+    const m = new Map<string, typeof connections[number]>()
+    for (const c of connections) m.set(c.app_client_id, c)
+    return m
+  }, [connections])
+
+  // OAuth result banner — fed by URL query params after redirect from Amazon
+  const [oauthResult, setOauthResult] = useState<
+    | { status: 'success'; appClientId: string }
+    | { status: 'error'; message: string }
+    | null
+  >(null)
+
+  useEffect(() => {
+    // The Edge Function redirects to /#/clients?connected=<id> or
+    // /#/clients?connect_error=<msg> on the hash. Parse both.
+    const parse = () => {
+      const raw = window.location.hash.split('?')[1] ?? ''
+      const params = new URLSearchParams(raw)
+      const connected = params.get('connected')
+      const errorMsg = params.get('connect_error')
+      if (connected) {
+        setOauthResult({ status: 'success', appClientId: connected })
+        refreshConnections()
+        // Clean the URL so a refresh doesn't re-show the banner
+        window.location.hash = '/clients'
+      } else if (errorMsg) {
+        setOauthResult({ status: 'error', message: errorMsg })
+        window.location.hash = '/clients'
+      }
+    }
+    parse()
+    window.addEventListener('hashchange', parse)
+    return () => window.removeEventListener('hashchange', parse)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   // Goal realism for the current client (if data available)
   const realism = useMemo(() => {
@@ -43,6 +84,17 @@ export function Clients() {
           <Button onClick={() => setAdding(true)} icon={<Plus className="w-4 h-4" />}>Add client</Button>
         )}
       </header>
+
+      {oauthResult && (
+        <ConnectionResultBanner
+          status={oauthResult.status}
+          clientName={oauthResult.status === 'success'
+            ? clients.find(c => c.id === oauthResult.appClientId)?.name
+            : undefined}
+          errorMessage={oauthResult.status === 'error' ? oauthResult.message : undefined}
+          onDismiss={() => setOauthResult(null)}
+        />
+      )}
 
       {adding && (
         <Panel>
@@ -80,12 +132,13 @@ export function Clients() {
                 <th className="text-right px-3 py-2.5 font-medium">Reports</th>
                 <th className="text-right px-3 py-2.5 font-medium">Scenarios</th>
                 <th className="text-left px-3 py-2.5 font-medium">Status</th>
+                <th className="text-left px-3 py-2.5 font-medium">Amazon Ads</th>
                 <th className="px-3 py-2.5 pr-5" />
               </tr>
             </thead>
             <tbody>
               {clients.length === 0 && (
-                <tr><td colSpan={7} className="text-center py-8 text-sm text-ink-faint">No clients yet.</td></tr>
+                <tr><td colSpan={8} className="text-center py-8 text-sm text-ink-faint">No clients yet.</td></tr>
               )}
               {clients.map(c => {
                 const b = state.bundles[c.id]
@@ -121,6 +174,13 @@ export function Clients() {
                       <Pill tone={reports >= 2 ? 'mint' : reports > 0 ? 'gold' : 'mute'}>
                         {reports >= 2 ? 'Ready' : reports > 0 ? 'Partial' : 'Empty'}
                       </Pill>
+                    </td>
+                    <td className="px-3 py-2.5">
+                      <AmazonConnectButton
+                        client={c}
+                        connection={connectionByClient.get(c.id)}
+                        onChanged={refreshConnections}
+                      />
                     </td>
                     <td className="px-3 py-2.5 pr-5 text-right">
                       <div className="inline-flex items-center gap-1">
