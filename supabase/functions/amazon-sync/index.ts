@@ -348,33 +348,21 @@ async function createReport(
 }
 
 function columnsFor(adProduct: 'SP' | 'SB' | 'SD'): string[] {
+  // Request raw metrics only. CTR / CVR / ROAS / CPC are computed client-side
+  // in mergeReportRows after aggregating across days + products (ratios can't
+  // be summed). Amazon's v3 API rejects the whole request if any column is
+  // invalid for the ad product, so we keep each list minimal and known-good.
   const base = [
     "date",
     "campaignId", "campaignName", "campaignStatus",
     "impressions", "clicks", "cost",
   ]
   if (adProduct === 'SP') {
-    return [
-      ...base,
-      "portfolioId",
-      "sales7d", "purchases7d", "unitsSoldClicks7d",
-      "clickThroughRate", "costPerClick",
-      "roasClicks7d",
-    ]
+    // SP uses the 7-day attribution windows.
+    return [...base, "sales7d", "purchases7d"]
   }
-  if (adProduct === 'SB') {
-    return [
-      ...base,
-      "sales", "purchases",
-      "clickThroughRate", "costPerClick",
-    ]
-  }
-  // SD
-  return [
-    ...base,
-    "sales", "purchases",
-    "clickThroughRate", "costPerClick",
-  ]
+  // SB and SD use the plain sales / purchases columns.
+  return [...base, "sales", "purchases"]
 }
 
 // ---------- Report status + download ----------
