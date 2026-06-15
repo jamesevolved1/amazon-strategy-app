@@ -206,12 +206,21 @@ async function syncOne(
 
   // 5. If no pending reports left, request a fresh batch
   let newPending: PendingReport[] = []
+  let requestErrors: string[] = []
   if (stillPending.length === 0 && downloads === 0 && pending.length === 0) {
-    newPending = await requestFreshReports(profileIds, accessToken, adsClientId)
+    const r = await requestFreshReports(profileIds, accessToken, adsClientId)
+    newPending = r.pending
+    requestErrors = r.errors
   }
 
   const finalPending = [...stillPending, ...newPending]
   const allDone = finalPending.length === 0 && ingestedRows.length > 0
+
+  // Surface report-request failures: if we tried to request reports and got
+  // nothing back, store the reasons so they show up in the UI / diagnostics.
+  const reqError = (newPending.length === 0 && requestErrors.length > 0)
+    ? `Report request failed — ${requestErrors.slice(0, 4).join(' | ')}`
+    : null
 
   // 6. Save back
   const updates: Record<string, unknown> = {
@@ -219,13 +228,15 @@ async function syncOne(
     amazon_profile_ids: profileIds,
     pending_reports: finalPending,
     last_synced_at: new Date().toISOString(),
-    last_sync_error: null,
+    last_sync_error: reqError,
   }
   if (ingestedRows.length > 0) {
     updates.synced_data = synced
     updates.synced_data_at = new Date().toISOString()
   }
   await supabase.from("amazon_connections").update(updates).eq("id", conn.id)
+
+  if (reqError) throw new Error(reqError)
 
   return {
     profiles_found: profileIds.length,
@@ -362,13 +373,14 @@ async function requestFreshReports(
   profileIds: number[],
   accessToken: string,
   clientId: string,
-): Promise<PendingReport[]> {
+): Promise<{ pending: PendingReport[]; errors: string[] }> {
   const endDate = new Date()
   const startDate = new Date(endDate.getTime() - REPORT_DAYS_BACK * 86_400_000)
   const startIso = isoDate(startDate)
   const endIso = isoDate(endDate)
 
   const pending: PendingReport[] = []
+  const errors: string[] = []
 
   for (const profileId of profileIds) {
     for (const product of AD_PRODUCTS) {
@@ -384,12 +396,13 @@ async function requestFreshReports(
           endDate: endIso,
         })
       } catch (e: unknown) {
-        console.error("report request failed", profileId, product.label, e instanceof Error ? e.message : String(e))
-        // Skip but don't fail the whole sync.
+        const m = e instanceof Error ? e.message : String(e)
+        console.error("report request failed", profileId, product.label, m)
+        errors.push(`p${profileId}/${product.label}: ${m}`)
       }
     }
   }
-  return pending
+  return { pending, errors }
 }
 
 async function createReport(
