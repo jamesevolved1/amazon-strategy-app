@@ -39,9 +39,9 @@ const AD_PRODUCTS = [
 ]
 
 // Pacing / safety
-const WALL_BUDGET_MS = 40_000          // stop starting new work past this
-const ADS_DOWNLOADS_PER_CONN = 3
-const SPAPI_DOWNLOADS_PER_CONN = 1
+const WALL_BUDGET_MS = 45_000          // stop starting new work past this
+const ADS_DOWNLOADS_PER_CONN = 12      // a full client (≤4 profiles × 3 products) in one pass
+const SPAPI_DOWNLOADS_PER_CONN = 2
 const REPORT_DAYS_BACK = 60
 const STALE_MS = 20 * 60 * 60 * 1000   // refresh reports for data older than 20h
 
