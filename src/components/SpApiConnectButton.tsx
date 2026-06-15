@@ -5,7 +5,7 @@ import React, { useState } from 'react'
 import { Store, Link2Off, AlertTriangle, CheckCircle2, Lock } from 'lucide-react'
 import { Pill, Button } from './ui'
 import {
-  buildConsentUrl, deleteSpApiConnection, isSpApiConfigured, type SpApiConnection,
+  buildConsentUrl, deleteSpApiConnection, isSpApiConfigured, SPAPI_DRAFT_MODE, type SpApiConnection,
 } from '../lib/spapi'
 import { getSupabase, isSupabaseConfigured } from '../lib/supabase'
 import { relativeTime } from '../lib/format'
@@ -44,6 +44,7 @@ export function SpApiConnectButton({
         appClientId: client.id,
         appClientName: client.name,
         region: 'NA',
+        draftMode: SPAPI_DRAFT_MODE,
       })
       window.location.assign(url)
     } catch (e: unknown) {

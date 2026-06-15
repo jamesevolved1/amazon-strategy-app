@@ -7,10 +7,19 @@
 import { useEffect, useState } from 'react'
 import { getSupabase, isSupabaseConfigured } from './supabase'
 
-// SP-API application id (from Seller Central → Develop Apps). Public — appears
-// in the consent URL. Settable via env so it can be configured without a code
-// change; falls back to empty (button shows "needs configuration").
-export const SPAPI_APPLICATION_ID = (import.meta.env.VITE_SPAPI_APPLICATION_ID as string | undefined) ?? ''
+// SP-API application id — our own "Team James - Strategy Dashboard" app
+// (independent of the coworker's app). Public — appears in the consent URL.
+// Env var overrides if needed.
+export const SPAPI_APPLICATION_ID =
+  (import.meta.env.VITE_SPAPI_APPLICATION_ID as string | undefined) ??
+  'amzn1.sp.solution.7542a1ea-a9f8-456c-9c0d-0960daf571ca'
+
+// The app is in Draft. Draft apps require version=beta on the consent URL and
+// can only authorize seller accounts the developer's own login can access —
+// which covers the brands managed under the Evolved Commerce solution-provider
+// login. Flip to false once the app is Published (lifts the authorization cap).
+export const SPAPI_DRAFT_MODE =
+  (import.meta.env.VITE_SPAPI_DRAFT_MODE as string | undefined) !== 'false'
 
 export const SPAPI_REDIRECT_URI =
   'https://txksmxlttdlzultcbxkf.supabase.co/functions/v1/spapi-oauth-callback'
