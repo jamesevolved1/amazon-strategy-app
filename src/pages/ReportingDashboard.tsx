@@ -396,8 +396,18 @@ export function ReportingDashboard() {
             )}
           </div>
           {range ? (
-            <div className="mt-2 text-xs text-ink-mute tnum">
-              {range.start} → {range.end} · <span className="text-ink-faint">{range.days} days of data</span>
+            <div className="mt-2 flex items-center gap-2 flex-wrap text-xs tnum">
+              <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-ink text-white font-medium">
+                {range.start} → {range.end}
+              </span>
+              <span className="text-ink-faint">{range.days} days</span>
+              <span className="text-ink-faint">·</span>
+              <span className="text-ink-mute">
+                arrows compare to the prior {range.days} days
+              </span>
+              <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-[#f1f2f5] text-ink-mute">
+                {range.prevStart} → {range.prevEnd}
+              </span>
             </div>
           ) : preset === 'custom' ? (
             <div className="mt-2 text-xs text-ink-faint">Pick a start and end date to view a custom range.</div>
@@ -406,12 +416,6 @@ export function ReportingDashboard() {
       </div>
 
       <KPIRow totals={totals} prev={prevTotals} ccy={currentClient.currency} />
-
-      {range && (
-        <div className="text-xs text-ink-faint -mt-2">
-          vs previous period · {range.prevStart} → {range.prevEnd}
-        </div>
-      )}
 
       <div className="grid grid-cols-1 xl:grid-cols-3 gap-5">
         <Panel className="xl:col-span-2">
