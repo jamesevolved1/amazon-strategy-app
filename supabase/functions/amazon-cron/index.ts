@@ -42,7 +42,8 @@ const AD_PRODUCTS = [
 const WALL_BUDGET_MS = 45_000          // stop starting new work past this
 const ADS_DOWNLOADS_PER_CONN = 12      // a full client (≤4 profiles × 3 products) in one pass
 const SPAPI_DOWNLOADS_PER_CONN = 2
-const REPORT_DAYS_BACK = 60
+const ADS_DAYS_BACK = 30               // Ads v3 campaign reports cap at 31-day range
+const SPAPI_DAYS_BACK = 60             // Sales & Traffic allows a longer window
 const STALE_MS = 20 * 60 * 60 * 1000   // refresh reports for data older than 20h
 
 Deno.serve(async (req) => {
@@ -150,7 +151,7 @@ async function processAds(sb: any, conn: any, clientId: string, clientSecret: st
 }
 
 async function requestAdsReports(profileIds: number[], token: string, clientId: string) {
-  const end = new Date(), start = new Date(Date.now() - REPORT_DAYS_BACK * 86_400_000)
+  const end = new Date(), start = new Date(Date.now() - ADS_DAYS_BACK * 86_400_000)
   const startIso = isoDate(start), endIso = isoDate(end)
   const out: any[] = []
   for (const profileId of profileIds) {
@@ -276,7 +277,7 @@ async function processSpapi(sb: any, conn: any, clientId: string, clientSecret: 
 }
 
 async function requestSpapiReport(host: string, token: string, marketplaceId: string) {
-  const end = new Date(), start = new Date(Date.now() - REPORT_DAYS_BACK * 86_400_000)
+  const end = new Date(), start = new Date(Date.now() - SPAPI_DAYS_BACK * 86_400_000)
   const resp = await fetch(`${host}/reports/2021-06-30/reports`, {
     method: "POST",
     headers: { "x-amz-access-token": token, "Content-Type": "application/json", Accept: "application/json" },

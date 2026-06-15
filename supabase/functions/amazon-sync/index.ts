@@ -24,9 +24,9 @@ const AMAZON_ADS_API = "https://advertising-api.amazon.com"
 // hundred KB to a few MB; 4 is conservative.
 const MAX_DOWNLOADS_PER_RUN = 4
 
-// Number of days back to request. 60 gives enough history for custom date
-// ranges while keeping report generation reasonably fast.
-const REPORT_DAYS_BACK = 60
+// Amazon Ads v3 campaign reports cap the date range at 31 days per report, so
+// we request the last 30. (Total sales via SP-API uses a longer window.)
+const REPORT_DAYS_BACK = 30
 
 // Map our short ad-product label to Amazon's enum + report type.
 const AD_PRODUCTS = [
