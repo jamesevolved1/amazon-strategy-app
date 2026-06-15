@@ -5,6 +5,7 @@ import {
 } from 'lucide-react'
 import { Spinner } from '../components/ui'
 import { triggerSync, useAmazonConnections } from '../lib/amazon'
+import { triggerSpApiSync } from '../lib/spapi'
 import {
   Area, CartesianGrid, ComposedChart, Legend, Line, ResponsiveContainer, Tooltip, XAxis, YAxis,
 } from 'recharts'
@@ -31,65 +32,92 @@ export function ReportingDashboard() {
   const [campaignSort, setCampaignSort] = useState<'spend' | 'sales' | 'orders' | 'roas'>('spend')
 
   const { connections, refresh: refreshConnections } = useAmazonConnections()
-  const { connections: spapiConnections } = useSpApiConnections()
+  const { connections: spapiConnections, refresh: refreshSpApi } = useSpApiConnections()
   const [syncing, setSyncing] = useState(false)
   const [syncBanner, setSyncBanner] = useState<{ kind: 'ok' | 'err' | 'partial'; message: string } | null>(null)
 
   const currentConnection = currentClient
     ? connections.find(c => c.app_client_id === currentClient.id)
     : undefined
+  const spapiConnection = currentClient
+    ? spapiConnections.find(c => c.app_client_id === currentClient.id)
+    : undefined
 
   const pendingCount = currentConnection?.pending_reports?.length ?? 0
+  const spapiPendingCount = spapiConnection?.pending_reports?.length ?? 0
 
   const handleSyncNow = async () => {
     if (!currentClient) return
     setSyncing(true)
     setSyncBanner(null)
-    const result = await triggerSync(currentClient.id)
+    const clientId = currentClient.id
+    // Fire both syncs together: Ads (campaigns) + SP-API (total sales) when each
+    // is connected. They write to separate tables, so they're independent.
+    const [adsResult, spapiResult] = await Promise.all([
+      currentConnection ? triggerSync(clientId) : Promise.resolve(null),
+      spapiConnection ? triggerSpApiSync(clientId) : Promise.resolve(null),
+    ])
     setSyncing(false)
-    await refreshConnections()
-    if (result.error) {
-      setSyncBanner({ kind: 'err', message: result.error })
-      return
+    await Promise.all([refreshConnections(), refreshSpApi()])
+
+    const parts: string[] = []
+    let kind: 'ok' | 'err' | 'partial' = 'ok'
+
+    if (adsResult) {
+      if (adsResult.error) { parts.push(`Ads: ${adsResult.error}`); kind = 'err' }
+      else {
+        const row = adsResult.results.find(r => r.app_client_id === clientId)
+        if (row?.status === 'error') { parts.push(`Ads: ${row.error || 'failed'}`); kind = 'err' }
+        else if (row?.all_done) parts.push(`Ads: ${row.campaigns_after_sync ?? 0} campaigns`)
+        else if (row?.pending_count) parts.push(`Ads: ${row.pending_count} reports in flight`)
+        else if (row?.profiles_found != null) parts.push(`Ads: ${row.profiles_found} profile${row.profiles_found === 1 ? '' : 's'}`)
+      }
     }
-    const row = result.results.find(r => r.app_client_id === currentClient.id)
-    if (row?.status === 'ok') {
-      const msg =
-        row.all_done
-          ? `Synced — ${row.campaigns_after_sync ?? 0} campaigns across ${row.profiles_found ?? 0} Amazon profile${row.profiles_found === 1 ? '' : 's'}.`
-          : row.ingested_reports
-            ? `Synced — ingested ${row.ingested_reports} report${row.ingested_reports === 1 ? '' : 's'} · ${row.pending_count ?? 0} still in flight at Amazon.`
-            : row.pending_count
-              ? `Requested ${row.pending_count} reports from Amazon. They take 1-15 minutes to generate — dashboard will auto-refresh.`
-              : `Synced — ${row.profiles_found ?? 0} profile${row.profiles_found === 1 ? '' : 's'} reachable for ${currentClient.name}.`
-      setSyncBanner({ kind: 'ok', message: msg })
-    } else if (row?.status === 'error') {
-      setSyncBanner({ kind: 'err', message: row.error || 'Sync failed.' })
+    if (spapiResult) {
+      if (spapiResult.error) { parts.push(`Seller Central: ${spapiResult.error}`); if (kind !== 'err') kind = 'err' }
+      else {
+        const row = spapiResult.results.find(r => r.app_client_id === clientId)
+        if (row?.status === 'error') { parts.push(`Seller Central: ${row.error || 'failed'}`); if (kind !== 'err') kind = 'err' }
+        else if (row?.all_done) parts.push(`Seller Central: ${row.days_after_sync ?? 0} days of total sales`)
+        else if (row?.pending_count) parts.push(`Seller Central: report in flight (1-5 min)`)
+        else parts.push('Seller Central: requested report')
+      }
+    }
+
+    if (!adsResult && !spapiResult) {
+      setSyncBanner({ kind: 'partial', message: 'No Amazon connection for this client. Connect Amazon Ads or Seller Central on the Clients page.' })
     } else {
-      setSyncBanner({ kind: 'partial', message: result.message || 'No connection found for this client.' })
+      setSyncBanner({ kind, message: parts.join(' · ') || 'Synced.' })
     }
-    setTimeout(() => setSyncBanner(null), 8000)
+    setTimeout(() => setSyncBanner(null), 9000)
   }
 
-  // Auto-poll: while reports are in flight, hit Sync every 30s without spinner
-  // spam so the dashboard fills in as reports finish at Amazon's end.
+  // Auto-poll: while reports are in flight (Ads or SP-API), hit Sync every 30s
+  // without spinner spam so the dashboard fills in as reports finish at Amazon.
   const autoPollRef = useRef<NodeJS.Timeout | null>(null)
   useEffect(() => {
     if (autoPollRef.current) {
       clearInterval(autoPollRef.current)
       autoPollRef.current = null
     }
-    if (!currentClient || pendingCount === 0) return
+    const anyPending = pendingCount > 0 || spapiPendingCount > 0
+    if (!currentClient || !anyPending) return
+    const clientId = currentClient.id
+    const clientName = currentClient.name
     autoPollRef.current = setInterval(async () => {
-      if (!currentClient) return
-      const result = await triggerSync(currentClient.id)
-      await refreshConnections()
-      const row = result.results.find(r => r.app_client_id === currentClient.id)
-      if (row?.pending_count === 0 && row?.campaigns_after_sync) {
-        setSyncBanner({
-          kind: 'ok',
-          message: `Live data ready — ${row.campaigns_after_sync} campaigns ingested for ${currentClient.name}.`,
-        })
+      const [adsResult, spapiResult] = await Promise.all([
+        pendingCount > 0 ? triggerSync(clientId) : Promise.resolve(null),
+        spapiPendingCount > 0 ? triggerSpApiSync(clientId) : Promise.resolve(null),
+      ])
+      await Promise.all([refreshConnections(), refreshSpApi()])
+      const adsRow = adsResult?.results.find(r => r.app_client_id === clientId)
+      const spapiRow = spapiResult?.results.find(r => r.app_client_id === clientId)
+      if (adsRow?.pending_count === 0 && adsRow?.campaigns_after_sync) {
+        setSyncBanner({ kind: 'ok', message: `Live ad data ready — ${adsRow.campaigns_after_sync} campaigns for ${clientName}.` })
+        setTimeout(() => setSyncBanner(null), 8000)
+      }
+      if (spapiRow?.pending_count === 0 && spapiRow?.days_after_sync) {
+        setSyncBanner({ kind: 'ok', message: `Total sales ready — ${spapiRow.days_after_sync} days for ${clientName}.` })
         setTimeout(() => setSyncBanner(null), 8000)
       }
     }, 30_000)
@@ -100,7 +128,7 @@ export function ReportingDashboard() {
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pendingCount, currentClient?.id])
+  }, [pendingCount, spapiPendingCount, currentClient?.id])
 
   if (!currentClient || !currentBundle) {
     return (
@@ -116,7 +144,6 @@ export function ReportingDashboard() {
   const syncedCampaigns = currentConnection?.synced_data?.campaigns ?? null
   const syncedDaily = currentConnection?.synced_data?.daily ?? null
   // SP-API total-sales by day (the missing piece for TACOS / organic / total)
-  const spapiConnection = currentClient ? spapiConnections.find(c => c.app_client_id === currentClient.id) : undefined
   const spapiDaily = spapiConnection?.synced_data?.daily ?? null
 
   // Build a merged daily series from bulk daily + business report daily + synced API daily.
@@ -255,6 +282,7 @@ export function ReportingDashboard() {
           onSyncNow={handleSyncNow}
           syncing={syncing}
           connection={currentConnection}
+          canSync={Boolean(currentConnection || spapiConnection)}
         />
         {syncBanner && (
           <div className={cx(
@@ -303,6 +331,7 @@ export function ReportingDashboard() {
         onSyncNow={handleSyncNow}
         syncing={syncing}
         connection={currentConnection}
+        canSync={Boolean(currentConnection || spapiConnection)}
       />
 
       {syncBanner && (
@@ -453,7 +482,7 @@ export function ReportingDashboard() {
 }
 
 function AccountHeader({
-  client, campaignCount, synced, history, stale, onSyncNow, syncing, connection,
+  client, campaignCount, synced, history, stale, onSyncNow, syncing, connection, canSync,
 }: {
   client: import('../types').Client
   campaignCount: number
@@ -463,6 +492,7 @@ function AccountHeader({
   onSyncNow: () => void
   syncing: boolean
   connection?: { last_synced_at: string | null; amazon_profile_ids: number[] | null } | undefined
+  canSync?: boolean
 }) {
   const liveSynced = connection?.last_synced_at ?? synced
   const profileCount = connection?.amazon_profile_ids?.length ?? 0
@@ -495,7 +525,7 @@ function AccountHeader({
         </Pill>
         <Button
           onClick={onSyncNow}
-          disabled={syncing || !connection}
+          disabled={syncing || !canSync}
           icon={syncing ? <Spinner size={14} /> : <RefreshCcw className="w-4 h-4" />}
         >
           {syncing ? 'Syncing…' : 'Sync now'}
