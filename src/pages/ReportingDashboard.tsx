@@ -16,6 +16,7 @@ import {
   adProductSummary, totalsFromSeries, projectCurrentMonth, type ReportingTotals, type MonthProjection,
 } from '../utils/pnl'
 import { customRange, resolveRange, sliceSeries, type RangePreset } from '../utils/dateRange'
+import { useSpApiConnections } from '../lib/spapi'
 import type { BulkCampaignData, BusinessReportData } from '../utils/parsers'
 import type { CampaignRow, DailySeriesPoint } from '../types'
 
@@ -30,6 +31,7 @@ export function ReportingDashboard() {
   const [campaignSort, setCampaignSort] = useState<'spend' | 'sales' | 'orders' | 'roas'>('spend')
 
   const { connections, refresh: refreshConnections } = useAmazonConnections()
+  const { connections: spapiConnections } = useSpApiConnections()
   const [syncing, setSyncing] = useState(false)
   const [syncBanner, setSyncBanner] = useState<{ kind: 'ok' | 'err' | 'partial'; message: string } | null>(null)
 
@@ -113,6 +115,9 @@ export function ReportingDashboard() {
   const biz = currentBundle.reports.businessReport?.parsed as BusinessReportData | undefined
   const syncedCampaigns = currentConnection?.synced_data?.campaigns ?? null
   const syncedDaily = currentConnection?.synced_data?.daily ?? null
+  // SP-API total-sales by day (the missing piece for TACOS / organic / total)
+  const spapiConnection = currentClient ? spapiConnections.find(c => c.app_client_id === currentClient.id) : undefined
+  const spapiDaily = spapiConnection?.synced_data?.daily ?? null
 
   // Build a merged daily series from bulk daily + business report daily + synced API daily.
   const series: DailySeriesPoint[] = useMemo(() => {
@@ -131,9 +136,10 @@ export function ReportingDashboard() {
     }
     ingest(bulk?.daily)
     ingest(biz?.daily)
-    // Synced API data takes priority — overwrite from synced where present.
+    // Synced Ads API data takes priority for the ad metrics.
     if (syncedDaily) {
       for (const p of syncedDaily) {
+        const existing = map.get(p.date)
         map.set(p.date, {
           date: p.date,
           spend: p.spend,
@@ -141,7 +147,18 @@ export function ReportingDashboard() {
           orders: p.orders,
           impressions: p.impressions,
           clicks: p.clicks,
+          // keep any totalSales already present (e.g. from SP-API, applied below)
+          totalSales: existing?.totalSales,
         })
+      }
+    }
+    // SP-API is authoritative for TOTAL (ordered product) sales — layer it on
+    // top so TACOS, organic sales, and projections compute against real totals.
+    if (spapiDaily) {
+      for (const p of spapiDaily) {
+        const existing = map.get(p.date) ?? { date: p.date, spend: 0, adSales: 0, orders: 0, impressions: 0, clicks: 0 }
+        existing.totalSales = p.totalSales
+        map.set(p.date, existing)
       }
     }
     return Array.from(map.values())
@@ -151,7 +168,7 @@ export function ReportingDashboard() {
         cvr: p.clicks ? (p.orders / p.clicks) * 100 : 0,
       }))
       .sort((a, b) => a.date.localeCompare(b.date))
-  }, [bulk, biz, syncedDaily])
+  }, [bulk, biz, syncedDaily, spapiDaily])
 
   const range = useMemo(
     () => preset === 'custom' ? customRange(customStart, customEnd) : resolveRange(series, preset),

@@ -2,11 +2,13 @@ import React, { useEffect, useMemo, useState } from 'react'
 import { Plus, Trash2, Pencil, Check, X } from 'lucide-react'
 import { Panel, Pill, Button, EmptyState, TextField, NumberField, cx } from '../components/ui'
 import { AmazonConnectButton, ConnectionResultBanner } from '../components/AmazonConnectButton'
+import { SpApiConnectButton } from '../components/SpApiConnectButton'
 import { useStore } from '../lib/store'
 import { currency, num, percent } from '../lib/format'
 import { evaluateGoalRealism, totalsFromSeries } from '../utils/pnl'
 import { resolveRange, sliceSeries } from '../utils/dateRange'
 import { useAmazonConnections } from '../lib/amazon'
+import { useSpApiConnections } from '../lib/spapi'
 import type { BulkCampaignData } from '../utils/parsers'
 import type { Currency, DailySeriesPoint, Marketplace } from '../types'
 
@@ -32,6 +34,14 @@ export function Clients() {
     return m
   }, [connections])
 
+  // SP-API (Seller Central) connections
+  const { connections: spapiConnections, refresh: refreshSpApi } = useSpApiConnections()
+  const spApiByClient = useMemo(() => {
+    const m = new Map<string, typeof spapiConnections[number]>()
+    for (const c of spapiConnections) m.set(c.app_client_id, c)
+    return m
+  }, [spapiConnections])
+
   // OAuth result banner — fed by URL query params after redirect from Amazon
   const [oauthResult, setOauthResult] = useState<
     | { status: 'success'; appClientId: string }
@@ -47,13 +57,21 @@ export function Clients() {
       const params = new URLSearchParams(raw)
       const connected = params.get('connected')
       const errorMsg = params.get('connect_error')
+      const spapiConnected = params.get('spapi_connected')
+      const spapiError = params.get('spapi_error')
       if (connected) {
         setOauthResult({ status: 'success', appClientId: connected })
         refreshConnections()
-        // Clean the URL so a refresh doesn't re-show the banner
         window.location.hash = '/clients'
       } else if (errorMsg) {
         setOauthResult({ status: 'error', message: errorMsg })
+        window.location.hash = '/clients'
+      } else if (spapiConnected) {
+        setOauthResult({ status: 'success', appClientId: spapiConnected })
+        refreshSpApi()
+        window.location.hash = '/clients'
+      } else if (spapiError) {
+        setOauthResult({ status: 'error', message: spapiError })
         window.location.hash = '/clients'
       }
     }
@@ -133,12 +151,13 @@ export function Clients() {
                 <th className="text-right px-3 py-2.5 font-medium">Scenarios</th>
                 <th className="text-left px-3 py-2.5 font-medium">Status</th>
                 <th className="text-left px-3 py-2.5 font-medium">Amazon Ads</th>
+                <th className="text-left px-3 py-2.5 font-medium">Seller Central</th>
                 <th className="px-3 py-2.5 pr-5" />
               </tr>
             </thead>
             <tbody>
               {clients.length === 0 && (
-                <tr><td colSpan={8} className="text-center py-8 text-sm text-ink-faint">No clients yet.</td></tr>
+                <tr><td colSpan={9} className="text-center py-8 text-sm text-ink-faint">No clients yet.</td></tr>
               )}
               {clients.map(c => {
                 const b = state.bundles[c.id]
@@ -180,6 +199,13 @@ export function Clients() {
                         client={c}
                         connection={connectionByClient.get(c.id)}
                         onChanged={refreshConnections}
+                      />
+                    </td>
+                    <td className="px-3 py-2.5">
+                      <SpApiConnectButton
+                        client={c}
+                        connection={spApiByClient.get(c.id)}
+                        onChanged={refreshSpApi}
                       />
                     </td>
                     <td className="px-3 py-2.5 pr-5 text-right">
