@@ -26,6 +26,22 @@ const SPAPI_HOST: Record<string, string> = {
 }
 const REPORT_DAYS_BACK = 60
 
+// GET_SALES_AND_TRAFFIC_REPORT accepts only ONE marketplace per report, and
+// returns sales in that marketplace's own currency. We pull the marketplace
+// matching the client's reporting currency (default: US) so total sales pair
+// cleanly with USD ad spend. Primary marketplaces by region:
+const PRIMARY_MARKETPLACE: Record<string, string> = {
+  NA: "ATVPDKIKX0DER", // amazon.com (US)
+  EU: "A1F83G8C2ARO7P", // amazon.co.uk (UK)
+  FE: "A1VC38T7YXB528", // amazon.co.jp (JP)
+}
+
+function pickMarketplace(marketplaceIds: string[], region: string): string {
+  const primary = PRIMARY_MARKETPLACE[region] ?? PRIMARY_MARKETPLACE.NA
+  if (marketplaceIds.includes(primary)) return primary
+  return marketplaceIds[0]
+}
+
 interface PendingReport {
   reportId: string
   status: string
@@ -141,7 +157,8 @@ async function syncOne(
   // this run (so we don't re-request mid-cycle).
   let newPending: PendingReport[] = []
   if (stillPending.length === 0 && ingested === 0 && pending.length === 0) {
-    newPending = [await requestReport(host, accessToken, marketplaceIds)]
+    const marketplaceId = pickMarketplace(marketplaceIds, conn.region)
+    newPending = [await requestReport(host, accessToken, marketplaceId)]
   }
   const finalPending = [...stillPending, ...newPending]
 
@@ -209,7 +226,7 @@ async function getMarketplaceIds(host: string, accessToken: string): Promise<str
   return (data.payload ?? []).map(p => p.marketplace.id).filter(Boolean)
 }
 
-async function requestReport(host: string, accessToken: string, marketplaceIds: string[]): Promise<PendingReport> {
+async function requestReport(host: string, accessToken: string, marketplaceId: string): Promise<PendingReport> {
   const end = new Date()
   const start = new Date(end.getTime() - REPORT_DAYS_BACK * 86_400_000)
   // SP-API wants RFC3339; day boundaries are fine.
@@ -224,7 +241,8 @@ async function requestReport(host: string, accessToken: string, marketplaceIds: 
     },
     body: JSON.stringify({
       reportType: "GET_SALES_AND_TRAFFIC_REPORT",
-      marketplaceIds,
+      // Sales & Traffic accepts exactly one marketplace per report.
+      marketplaceIds: [marketplaceId],
       dataStartTime: startIso,
       dataEndTime: endIso,
       reportOptions: { dateGranularity: "DAY", asinGranularity: "PARENT" },
