@@ -15,7 +15,7 @@
 //
 // Secrets reused from the OAuth callback: SPAPI_LWA_CLIENT_ID, SPAPI_LWA_CLIENT_SECRET.
 
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4"
+import { createClient, type SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.45.4"
 import { gunzip } from "https://deno.land/x/compress@v0.4.5/mod.ts"
 
 const LWA_TOKEN_URL = "https://api.amazon.com/auth/o2/token"
@@ -25,6 +25,7 @@ const SPAPI_HOST: Record<string, string> = {
   FE: "https://sellingpartnerapi-fe.amazon.com",
 }
 const REPORT_DAYS_BACK = 60
+const FINANCE_DAYS_BACK = 30  // Finances API window for real settlement fees
 
 // GET_SALES_AND_TRAFFIC_REPORT accepts only ONE marketplace per report, and
 // returns sales in that marketplace's own currency. We pull the marketplace
@@ -62,7 +63,14 @@ interface ConnectionRow {
   marketplace_ids: string[] | null
   region: string
   pending_reports: PendingReport[]
-  synced_data: { daily: any[] } | null
+  synced_data: {
+    daily: any[]
+    fees?: any
+    inventory?: any[]
+    financeDebug?: any
+    inventoryDebug?: any
+    feesCheckedAt?: string
+  } | null
 }
 
 const cors = {
@@ -116,7 +124,7 @@ Deno.serve(async (req) => {
 })
 
 async function syncOne(
-  supabase: ReturnType<typeof createClient>,
+  supabase: SupabaseClient,
   conn: ConnectionRow,
   clientId: string,
   clientSecret: string,
@@ -162,6 +170,33 @@ async function syncOne(
   }
   const finalPending = [...stillPending, ...newPending]
 
+  // Real settlement fees (Finances API) + FBA inventory. Both are additive and
+  // NON-FATAL: a missing role / 403 is captured into a diagnostic blob rather
+  // than thrown, so the Sales & Traffic flow keeps working. Each result is
+  // cached and only refreshed when stale, to respect tight rate limits.
+  let sideDataChanged = false
+  const lastFeeCheck = synced.feesCheckedAt ? new Date(synced.feesCheckedAt).getTime() : 0
+  const feesStale = Date.now() - lastFeeCheck > 6 * 60 * 60 * 1000 // 6h
+  if (feesStale) {
+    const mp = pickMarketplace(marketplaceIds, conn.region)
+    try {
+      const { summary, debug } = await fetchFinances(host, accessToken)
+      synced.fees = summary
+      synced.financeDebug = debug
+    } catch (e) {
+      synced.financeDebug = { error: e instanceof Error ? e.message : String(e) }
+    }
+    try {
+      const { items, debug } = await fetchInventory(host, accessToken, mp)
+      synced.inventory = items
+      synced.inventoryDebug = debug
+    } catch (e) {
+      synced.inventoryDebug = { error: e instanceof Error ? e.message : String(e) }
+    }
+    synced.feesCheckedAt = new Date().toISOString()
+    sideDataChanged = true
+  }
+
   const updates: Record<string, unknown> = {
     access_token: accessToken,
     marketplace_ids: marketplaceIds,
@@ -169,8 +204,10 @@ async function syncOne(
     last_synced_at: new Date().toISOString(),
     last_sync_error: null,
   }
-  if (ingested > 0) {
+  if (ingested > 0 || sideDataChanged) {
     updates.synced_data = synced
+  }
+  if (ingested > 0) {
     updates.synced_data_at = new Date().toISOString()
   }
   await supabase.from("spapi_connections").update(updates).eq("id", conn.id)
@@ -179,12 +216,14 @@ async function syncOne(
     pending_count: finalPending.length,
     ingested_reports: ingested,
     days_after_sync: synced.daily.length,
+    fee_total: synced.fees ? (synced.fees.referralFees + synced.fees.fbaFees + synced.fees.otherFees) : null,
+    inventory_skus: synced.inventory?.length ?? null,
     all_done: finalPending.length === 0 && ingested > 0,
   }
 }
 
 async function ensureAccessToken(
-  supabase: ReturnType<typeof createClient>,
+  supabase: SupabaseClient,
   conn: ConnectionRow,
   clientId: string,
   clientSecret: string,
@@ -326,6 +365,105 @@ function mergeDaily(existing: { daily: any[] }, rows: SalesTrafficRow[]): { dail
   }
   const daily = Array.from(map.values()).sort((a, b) => a.date.localeCompare(b.date))
   return { daily }
+}
+
+// ---------- Real settlement fees (Finances API v0) ----------
+
+function amt(x: any): number {
+  const n = Number(x?.CurrencyAmount ?? x?.amount ?? 0)
+  return Number.isFinite(n) ? n : 0
+}
+
+// Aggregate actual settled fees over the last FINANCE_DAYS_BACK days from
+// listFinancialEvents. Fee amounts are charges to the seller (negative) — we
+// sum absolute values. Paginated via NextToken; page-capped for rate limits.
+async function fetchFinances(host: string, accessToken: string): Promise<{ summary: any; debug: any }> {
+  const after = new Date(Date.now() - FINANCE_DAYS_BACK * 86_400_000).toISOString()
+  let principal = 0, referral = 0, fba = 0, otherFees = 0, refunds = 0, promotions = 0
+  let shipmentEvents = 0
+  let nextToken: string | undefined = undefined
+  let pages = 0
+  const debug: any = { windowDays: FINANCE_DAYS_BACK }
+  do {
+    const qs = nextToken
+      ? `NextToken=${encodeURIComponent(nextToken)}`
+      : `PostedAfter=${encodeURIComponent(after)}&MaxResultsPerPage=100`
+    const resp = await fetch(`${host}/finances/v0/financialEvents?${qs}`, {
+      headers: { "x-amz-access-token": accessToken, "Accept": "application/json" },
+    })
+    if (pages === 0) debug.status = resp.status
+    if (!resp.ok) { debug.body = (await resp.text()).slice(0, 250); break }
+    const j = await resp.json() as any
+    const ev = j.payload?.FinancialEvents ?? {}
+    for (const se of ev.ShipmentEventList ?? []) {
+      shipmentEvents++
+      for (const item of se.ShipmentItemList ?? []) {
+        for (const c of item.ItemChargeList ?? []) {
+          if (c.ChargeType === "Principal") principal += amt(c.ChargeAmount)
+        }
+        for (const f of item.ItemFeeList ?? []) {
+          const v = Math.abs(amt(f.FeeAmount))
+          const t = String(f.FeeType ?? "")
+          if (/Commission|ReferralFee/i.test(t)) referral += v
+          else if (/^FBA/i.test(t)) fba += v
+          else otherFees += v
+        }
+        for (const p of item.PromotionList ?? []) promotions += Math.abs(amt(p.PromotionAmount))
+      }
+    }
+    for (const re of ev.RefundEventList ?? []) {
+      for (const item of re.ShipmentItemAdjustmentList ?? []) {
+        for (const c of item.ItemChargeAdjustmentList ?? []) {
+          if (c.ChargeType === "Principal") refunds += Math.abs(amt(c.ChargeAmount))
+        }
+      }
+    }
+    nextToken = j.payload?.NextToken
+    pages++
+  } while (nextToken && pages < 15)
+  debug.pages = pages
+  debug.shipmentEvents = shipmentEvents
+  const summary = {
+    principal, referralFees: referral, fbaFees: fba, otherFees, refunds, promotions,
+    windowDays: FINANCE_DAYS_BACK, updatedAt: new Date().toISOString(),
+  }
+  return { summary, debug }
+}
+
+// ---------- FBA inventory (FBA Inventory API v1) ----------
+
+async function fetchInventory(host: string, accessToken: string, marketplaceId: string): Promise<{ items: any[]; debug: any }> {
+  const items: any[] = []
+  let nextToken: string | undefined = undefined
+  let pages = 0
+  const debug: any = {}
+  do {
+    const base = `${host}/fba/inventory/v1/summaries?details=true&granularityType=Marketplace&granularityId=${marketplaceId}&marketplaceIds=${marketplaceId}`
+    const url = nextToken ? `${base}&nextToken=${encodeURIComponent(nextToken)}` : base
+    const resp = await fetch(url, { headers: { "x-amz-access-token": accessToken, "Accept": "application/json" } })
+    if (pages === 0) debug.status = resp.status
+    if (!resp.ok) { debug.body = (await resp.text()).slice(0, 250); break }
+    const j = await resp.json() as any
+    for (const s of j.payload?.inventorySummaries ?? []) {
+      const d = s.inventoryDetails ?? {}
+      const inbound = (d.inboundWorkingQuantity ?? 0) + (d.inboundShippingQuantity ?? 0) + (d.inboundReceivingQuantity ?? 0)
+      items.push({
+        sku: s.sellerSku ?? "",
+        asin: s.asin ?? "",
+        fnSku: s.fnSku ?? "",
+        name: s.productName ?? "",
+        available: d.fulfillableQuantity ?? 0,
+        inbound,
+        reserved: d.reservedQuantity?.totalReservedQuantity ?? 0,
+        total: s.totalQuantity ?? 0,
+      })
+    }
+    nextToken = j.pagination?.nextToken
+    pages++
+  } while (nextToken && pages < 20)
+  debug.pages = pages
+  debug.count = items.length
+  return { items, debug }
 }
 
 function json(body: unknown, status = 200): Response {
