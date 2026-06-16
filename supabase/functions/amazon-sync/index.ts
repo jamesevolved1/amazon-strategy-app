@@ -13,7 +13,7 @@
 //
 // Auth: caller must provide a valid Supabase user JWT in Authorization.
 
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4"
+import { createClient, type SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.45.4"
 import { gunzip } from "https://deno.land/x/compress@v0.4.5/mod.ts"
 
 const AMAZON_TOKEN_URL = "https://api.amazon.com/auth/o2/token"
@@ -27,6 +27,12 @@ const MAX_DOWNLOADS_PER_RUN = 4
 // Amazon Ads v3 campaign reports cap the date range at 31 days per report, so
 // we request the last 30. (Total sales via SP-API uses a longer window.)
 const REPORT_DAYS_BACK = 30
+
+// How often to re-fetch the campaign→portfolio map. Portfolios change rarely
+// and the lookup costs several API calls per profile, so we cache the result
+// inside synced_data and only refresh it every 12 hours (or when fresh report
+// data arrives). This also back-fills already-synced clients on the next run.
+const PORTFOLIO_REFRESH_MS = 12 * 60 * 60 * 1000
 
 // Map our short ad-product label to Amazon's enum + report type.
 const AD_PRODUCTS = [
@@ -55,7 +61,7 @@ interface ConnectionRow {
   access_token_expires_at: string | null
   amazon_profile_ids: number[] | null
   pending_reports: PendingReport[]
-  synced_data: { campaigns: any[]; daily?: any[] } | null
+  synced_data: { campaigns: any[]; daily?: any[]; portfolioCheckedAt?: string } | null
   last_synced_at: string | null
 }
 
@@ -130,7 +136,7 @@ Deno.serve(async (req) => {
 })
 
 async function syncOne(
-  supabase: ReturnType<typeof createClient>,
+  supabase: SupabaseClient,
   conn: ConnectionRow,
   adsClientId: string,
   adsClientSecret: string,
@@ -188,9 +194,20 @@ async function syncOne(
   let synced = conn.synced_data ?? { campaigns: [], daily: [] }
   if (ingestedRows.length > 0) {
     synced = mergeReportRows(synced, ingestedRows)
-    // Enrich campaigns with portfolio names. The report columns can't carry
-    // portfolioId (Amazon rejects it), so we fetch the campaign→portfolio
-    // mapping separately. Resilient: failure leaves campaigns unenriched.
+  }
+
+  // Enrich campaigns with portfolio names. The report columns can't carry
+  // portfolioId (Amazon rejects it), so we fetch the campaign→portfolio map
+  // separately (SP/SB/SD) and back-fill. We run this when fresh data arrives,
+  // OR when existing campaigns still lack labels and the cached map is stale —
+  // so clients synced before portfolio support get back-filled on the next run
+  // without waiting for a whole new report batch. Resilient: a failure just
+  // leaves campaigns unenriched.
+  let enriched = false
+  const lastCheck = synced.portfolioCheckedAt ? new Date(synced.portfolioCheckedAt).getTime() : 0
+  const mapIsStale = Date.now() - lastCheck > PORTFOLIO_REFRESH_MS
+  const hasCampaigns = (synced.campaigns?.length ?? 0) > 0
+  if (hasCampaigns && profileIds.length > 0 && (ingestedRows.length > 0 || mapIsStale)) {
     try {
       const portfolioMap = await buildPortfolioMap(profileIds, accessToken, adsClientId)
       if (portfolioMap.size > 0) {
@@ -199,6 +216,8 @@ async function syncOne(
           return name ? { ...c, portfolio: name } : c
         })
       }
+      synced.portfolioCheckedAt = new Date().toISOString()
+      enriched = true
     } catch (e) {
       console.error("portfolio enrich failed", e instanceof Error ? e.message : String(e))
     }
@@ -230,8 +249,10 @@ async function syncOne(
     last_synced_at: new Date().toISOString(),
     last_sync_error: reqError,
   }
-  if (ingestedRows.length > 0) {
+  if (ingestedRows.length > 0 || enriched) {
     updates.synced_data = synced
+  }
+  if (ingestedRows.length > 0) {
     updates.synced_data_at = new Date().toISOString()
   }
   await supabase.from("amazon_connections").update(updates).eq("id", conn.id)
@@ -250,7 +271,7 @@ async function syncOne(
 // ---------- Token + profiles ----------
 
 async function ensureAccessToken(
-  supabase: ReturnType<typeof createClient>,
+  supabase: SupabaseClient,
   conn: ConnectionRow,
   clientId: string,
   clientSecret: string,
@@ -299,10 +320,11 @@ async function listProfiles(accessToken: string, clientId: string): Promise<numb
 // ---------- Portfolio mapping ----------
 //
 // Reports can't carry portfolioId, so we build a campaignId -> portfolio name
-// map from the v2 portfolios endpoint (id -> name) joined with the SP
-// campaigns list (campaignId -> portfolioId). Covers Sponsored Products, where
-// portfolios are most commonly used. Resilient — every call is wrapped so a
-// failure for one profile/product doesn't break the others.
+// map from the v2 portfolios endpoint (id -> name) joined with each ad
+// product's campaign list (campaignId -> portfolioId). Covers Sponsored
+// Products (v3), Sponsored Brands (v4), and Sponsored Display (v3). Resilient —
+// every call is isolated so a failure for one profile/product doesn't break the
+// others, and an account with no portfolios just yields an empty map.
 async function buildPortfolioMap(
   profileIds: number[],
   accessToken: string,
@@ -311,22 +333,37 @@ async function buildPortfolioMap(
   const campaignToPortfolio = new Map<string, string>()
 
   for (const profileId of profileIds) {
-    try {
-      // 1. portfolioId -> name
-      const portResp = await fetch(`${AMAZON_ADS_API}/v2/portfolios`, {
-        headers: {
-          "Authorization": `Bearer ${accessToken}`,
-          "Amazon-Advertising-API-ClientId": clientId,
-          "Amazon-Advertising-API-Scope": String(profileId),
-          "Accept": "application/json",
-        },
-      })
-      if (!portResp.ok) continue
-      const portfolios = await portResp.json() as Array<{ portfolioId: number; name: string }>
-      if (!Array.isArray(portfolios) || portfolios.length === 0) continue
-      const portfolioName = new Map(portfolios.map(p => [String(p.portfolioId), p.name]))
+    const authBase = {
+      "Authorization": `Bearer ${accessToken}`,
+      "Amazon-Advertising-API-ClientId": clientId,
+      "Amazon-Advertising-API-Scope": String(profileId),
+    }
 
-      // 2. campaignId -> portfolioId (SP). Paginate up to a few pages.
+    // 1. portfolioId -> name (shared by all three ad products)
+    let portfolioName = new Map<string, string>()
+    try {
+      const portResp = await fetch(`${AMAZON_ADS_API}/v2/portfolios`, {
+        headers: { ...authBase, "Accept": "application/json" },
+      })
+      if (portResp.ok) {
+        const portfolios = await portResp.json() as Array<{ portfolioId: number | string; name: string }>
+        if (Array.isArray(portfolios)) {
+          portfolioName = new Map(portfolios.map(p => [String(p.portfolioId), p.name]))
+        }
+      }
+    } catch (e) {
+      console.error("portfolios fetch", profileId, e instanceof Error ? e.message : String(e))
+    }
+    if (portfolioName.size === 0) continue // no portfolios on this profile
+
+    const record = (campaignId: unknown, portfolioId: unknown) => {
+      const pid = portfolioId != null ? String(portfolioId) : ""
+      const name = pid ? portfolioName.get(pid) : undefined
+      if (name && campaignId != null) campaignToPortfolio.set(String(campaignId), name)
+    }
+
+    // 2. Sponsored Products campaigns (v3, paginated POST)
+    try {
       let nextToken: string | undefined = undefined
       let pages = 0
       do {
@@ -335,32 +372,71 @@ async function buildPortfolioMap(
           stateFilter: { include: ["ENABLED", "PAUSED", "ARCHIVED"] },
         }
         if (nextToken) body.nextToken = nextToken
-        const campResp = await fetch(`${AMAZON_ADS_API}/sp/campaigns/list`, {
+        const resp = await fetch(`${AMAZON_ADS_API}/sp/campaigns/list`, {
           method: "POST",
           headers: {
-            "Authorization": `Bearer ${accessToken}`,
-            "Amazon-Advertising-API-ClientId": clientId,
-            "Amazon-Advertising-API-Scope": String(profileId),
+            ...authBase,
             "Content-Type": "application/vnd.spCampaign.v3+json",
             "Accept": "application/vnd.spCampaign.v3+json",
           },
           body: JSON.stringify(body),
         })
-        if (!campResp.ok) break
-        const data = await campResp.json() as {
+        if (!resp.ok) break
+        const data = await resp.json() as {
           campaigns?: Array<{ campaignId: string | number; portfolioId?: string | number }>
           nextToken?: string
         }
-        for (const c of data.campaigns ?? []) {
-          const pid = c.portfolioId != null ? String(c.portfolioId) : ""
-          const name = pid ? portfolioName.get(pid) : undefined
-          if (name) campaignToPortfolio.set(String(c.campaignId), name)
-        }
+        for (const c of data.campaigns ?? []) record(c.campaignId, c.portfolioId)
         nextToken = data.nextToken
         pages++
       } while (nextToken && pages < 6)
     } catch (e) {
-      console.error("portfolio map profile", profileId, e instanceof Error ? e.message : String(e))
+      console.error("sp campaigns", profileId, e instanceof Error ? e.message : String(e))
+    }
+
+    // 3. Sponsored Brands campaigns (v4, paginated POST)
+    try {
+      let nextToken: string | undefined = undefined
+      let pages = 0
+      do {
+        const body: Record<string, unknown> = { maxResults: 500 }
+        if (nextToken) body.nextToken = nextToken
+        const resp = await fetch(`${AMAZON_ADS_API}/sb/v4/campaigns/list`, {
+          method: "POST",
+          headers: {
+            ...authBase,
+            "Content-Type": "application/vnd.sbcampaignresource.v4+json",
+            "Accept": "application/vnd.sbcampaignresource.v4+json",
+          },
+          body: JSON.stringify(body),
+        })
+        if (!resp.ok) break
+        const data = await resp.json() as {
+          campaigns?: Array<{ campaignId: string | number; portfolioId?: string | number }>
+          nextToken?: string
+        }
+        for (const c of data.campaigns ?? []) record(c.campaignId, c.portfolioId)
+        nextToken = data.nextToken
+        pages++
+      } while (nextToken && pages < 6)
+    } catch (e) {
+      console.error("sb campaigns", profileId, e instanceof Error ? e.message : String(e))
+    }
+
+    // 4. Sponsored Display campaigns (v3 GET, plain array response)
+    try {
+      const resp = await fetch(
+        `${AMAZON_ADS_API}/sd/campaigns?stateFilter=enabled,paused,archived&count=500`,
+        { headers: { ...authBase, "Accept": "application/json" } },
+      )
+      if (resp.ok) {
+        const data = await resp.json() as Array<{ campaignId: string | number; portfolioId?: string | number }>
+        if (Array.isArray(data)) {
+          for (const c of data) record(c.campaignId, c.portfolioId)
+        }
+      }
+    } catch (e) {
+      console.error("sd campaigns", profileId, e instanceof Error ? e.message : String(e))
     }
   }
 

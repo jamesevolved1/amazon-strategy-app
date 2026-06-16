@@ -45,6 +45,7 @@ const SPAPI_DOWNLOADS_PER_CONN = 2
 const ADS_DAYS_BACK = 30               // Ads v3 campaign reports cap at 31-day range
 const SPAPI_DAYS_BACK = 60             // Sales & Traffic allows a longer window
 const STALE_MS = 20 * 60 * 60 * 1000   // refresh reports for data older than 20h
+const PORTFOLIO_REFRESH_MS = 12 * 60 * 60 * 1000 // re-fetch campaign→portfolio map every 12h
 
 Deno.serve(async (req) => {
   const cronSecret = Deno.env.get("CRON_SECRET")
@@ -133,6 +134,29 @@ async function processAds(sb: any, conn: any, clientId: string, clientSecret: st
 
   if (ingestedRows.length > 0) synced = mergeAds(synced, ingestedRows)
 
+  // Back-fill campaign→portfolio labels. Reports can't carry portfolioId, so we
+  // fetch it separately (SP/SB/SD). Runs on fresh data OR when existing
+  // campaigns lack labels and the cached map is stale — so clients synced
+  // before portfolio support get labeled within one cron cycle.
+  let enriched = false
+  const lastCheck = synced.portfolioCheckedAt ? new Date(synced.portfolioCheckedAt).getTime() : 0
+  const mapIsStale = Date.now() - lastCheck > PORTFOLIO_REFRESH_MS
+  if ((synced.campaigns?.length ?? 0) > 0 && profileIds.length > 0 && (ingestedRows.length > 0 || mapIsStale)) {
+    try {
+      const map = await buildPortfolioMap(profileIds, token, clientId)
+      if (map.size > 0) {
+        synced.campaigns = synced.campaigns.map((c: any) => {
+          const name = c.campaignId ? map.get(String(c.campaignId)) : undefined
+          return name ? { ...c, portfolio: name } : c
+        })
+      }
+      synced.portfolioCheckedAt = new Date().toISOString()
+      enriched = true
+    } catch (e) {
+      console.error("portfolio enrich", e instanceof Error ? e.message : String(e))
+    }
+  }
+
   // Request fresh when nothing pending and data is stale.
   let newPending: any[] = []
   const stale = !conn.synced_data_at || (Date.now() - new Date(conn.synced_data_at).getTime() > STALE_MS)
@@ -145,7 +169,8 @@ async function processAds(sb: any, conn: any, clientId: string, clientSecret: st
     pending_reports: [...stillPending, ...newPending],
     last_synced_at: new Date().toISOString(), last_sync_error: null,
   }
-  if (ingestedRows.length > 0) { updates.synced_data = synced; updates.synced_data_at = new Date().toISOString() }
+  if (ingestedRows.length > 0 || enriched) updates.synced_data = synced
+  if (ingestedRows.length > 0) updates.synced_data_at = new Date().toISOString()
   await sb.from("amazon_connections").update(updates).eq("id", conn.id)
   return { ingested: downloads }
 }
@@ -227,6 +252,64 @@ function mergeAds(existing: any, rows: any[]) {
   }))
   const daily = Array.from(dmap.values()).map(d => ({ ...d, ctr: d.impressions ? (d.clicks / d.impressions) * 100 : 0, cvr: d.clicks ? (d.orders / d.clicks) * 100 : 0 })).sort((a, b) => a.date.localeCompare(b.date))
   return { campaigns, daily }
+}
+
+// Build campaignId -> portfolio name across SP (v3), SB (v4), SD (v3). Reports
+// can't carry portfolioId, so we join the v2 portfolios list (id -> name) with
+// each product's campaign list. Every call is isolated so one failure doesn't
+// break the rest; an account with no portfolios yields an empty map.
+async function buildPortfolioMap(profileIds: number[], token: string, clientId: string): Promise<Map<string, string>> {
+  const out = new Map<string, string>()
+  for (const profileId of profileIds) {
+    const authBase = {
+      Authorization: `Bearer ${token}`,
+      "Amazon-Advertising-API-ClientId": clientId,
+      "Amazon-Advertising-API-Scope": String(profileId),
+    }
+    let names = new Map<string, string>()
+    try {
+      const r = await fetch(`${ADS_API}/v2/portfolios`, { headers: { ...authBase, Accept: "application/json" } })
+      if (r.ok) {
+        const ps = await r.json() as Array<{ portfolioId: number | string; name: string }>
+        if (Array.isArray(ps)) names = new Map(ps.map(p => [String(p.portfolioId), p.name]))
+      }
+    } catch (e) { console.error("portfolios", profileId, e instanceof Error ? e.message : String(e)) }
+    if (names.size === 0) continue
+
+    const record = (cid: unknown, pid: unknown) => {
+      const key = pid != null ? String(pid) : ""
+      const name = key ? names.get(key) : undefined
+      if (name && cid != null) out.set(String(cid), name)
+    }
+
+    // SP (v3) + SB (v4): paginated POST
+    for (const cfg of [
+      { url: `${ADS_API}/sp/campaigns/list`, ct: "application/vnd.spCampaign.v3+json", body: { maxResults: 500, stateFilter: { include: ["ENABLED", "PAUSED", "ARCHIVED"] } } as Record<string, unknown> },
+      { url: `${ADS_API}/sb/v4/campaigns/list`, ct: "application/vnd.sbcampaignresource.v4+json", body: { maxResults: 500 } as Record<string, unknown> },
+    ]) {
+      try {
+        let nextToken: string | undefined = undefined, pages = 0
+        do {
+          const body = { ...cfg.body, ...(nextToken ? { nextToken } : {}) }
+          const r = await fetch(cfg.url, { method: "POST", headers: { ...authBase, "Content-Type": cfg.ct, Accept: cfg.ct }, body: JSON.stringify(body) })
+          if (!r.ok) break
+          const d = await r.json() as { campaigns?: Array<{ campaignId: string | number; portfolioId?: string | number }>; nextToken?: string }
+          for (const c of d.campaigns ?? []) record(c.campaignId, c.portfolioId)
+          nextToken = d.nextToken; pages++
+        } while (nextToken && pages < 6)
+      } catch (e) { console.error("campaigns list", profileId, e instanceof Error ? e.message : String(e)) }
+    }
+
+    // SD (v3): GET, plain array
+    try {
+      const r = await fetch(`${ADS_API}/sd/campaigns?stateFilter=enabled,paused,archived&count=500`, { headers: { ...authBase, Accept: "application/json" } })
+      if (r.ok) {
+        const d = await r.json() as Array<{ campaignId: string | number; portfolioId?: string | number }>
+        if (Array.isArray(d)) for (const c of d) record(c.campaignId, c.portfolioId)
+      }
+    } catch (e) { console.error("sd campaigns", profileId, e instanceof Error ? e.message : String(e)) }
+  }
+  return out
 }
 
 // ===================== SP-API =====================
