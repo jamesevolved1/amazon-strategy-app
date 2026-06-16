@@ -350,21 +350,35 @@ async function buildPortfolioMap(
     }
     const dbg: any = { profileId }
 
-    // 1. portfolioId -> name (shared by all three ad products)
-    let portfolioName = new Map<string, string>()
+    // 1. portfolioId -> name (shared by all three ad products).
+    //    The old GET /v2/portfolios returns 404 "Method Not Found" on current
+    //    accounts — portfolios moved to the v3 POST /portfolios/list endpoint.
+    const portfolioName = new Map<string, string>()
     try {
-      const portResp = await fetch(`${AMAZON_ADS_API}/v2/portfolios`, {
-        headers: { ...authBase, "Accept": "application/json" },
-      })
-      dbg.portfoliosStatus = portResp.status
-      if (portResp.ok) {
-        const portfolios = await portResp.json() as Array<{ portfolioId: number | string; name: string }>
-        if (Array.isArray(portfolios)) {
-          portfolioName = new Map(portfolios.map(p => [String(p.portfolioId), p.name]))
+      let nextToken: string | undefined = undefined
+      let pages = 0
+      do {
+        const body: Record<string, unknown> = {}
+        if (nextToken) body.nextToken = nextToken
+        const portResp = await fetch(`${AMAZON_ADS_API}/portfolios/list`, {
+          method: "POST",
+          headers: {
+            ...authBase,
+            "Content-Type": "application/vnd.spPortfolio.v3+json",
+            "Accept": "application/vnd.spPortfolio.v3+json",
+          },
+          body: JSON.stringify(body),
+        })
+        dbg.portfoliosStatus = portResp.status
+        if (!portResp.ok) { dbg.portfoliosBody = (await portResp.text()).slice(0, 200); break }
+        const data = await portResp.json() as {
+          portfolios?: Array<{ portfolioId: number | string; name: string }>
+          nextToken?: string
         }
-      } else {
-        dbg.portfoliosBody = (await portResp.text()).slice(0, 200)
-      }
+        for (const p of data.portfolios ?? []) portfolioName.set(String(p.portfolioId), p.name)
+        nextToken = data.nextToken
+        pages++
+      } while (nextToken && pages < 6)
     } catch (e) {
       dbg.portfoliosError = e instanceof Error ? e.message : String(e)
     }

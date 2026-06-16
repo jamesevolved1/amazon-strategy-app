@@ -255,7 +255,7 @@ function mergeAds(existing: any, rows: any[]) {
 }
 
 // Build campaignId -> portfolio name across SP (v3), SB (v4), SD (v3). Reports
-// can't carry portfolioId, so we join the v2 portfolios list (id -> name) with
+// can't carry portfolioId, so we join the v3 portfolios list (id -> name) with
 // each product's campaign list. Every call is isolated so one failure doesn't
 // break the rest; an account with no portfolios yields an empty map.
 async function buildPortfolioMap(profileIds: number[], token: string, clientId: string): Promise<Map<string, string>> {
@@ -266,13 +266,23 @@ async function buildPortfolioMap(profileIds: number[], token: string, clientId: 
       "Amazon-Advertising-API-ClientId": clientId,
       "Amazon-Advertising-API-Scope": String(profileId),
     }
-    let names = new Map<string, string>()
+    // portfolioId -> name. GET /v2/portfolios returns 404 "Method Not Found" on
+    // current accounts; portfolios moved to v3 POST /portfolios/list.
+    const names = new Map<string, string>()
     try {
-      const r = await fetch(`${ADS_API}/v2/portfolios`, { headers: { ...authBase, Accept: "application/json" } })
-      if (r.ok) {
-        const ps = await r.json() as Array<{ portfolioId: number | string; name: string }>
-        if (Array.isArray(ps)) names = new Map(ps.map(p => [String(p.portfolioId), p.name]))
-      }
+      let nextToken: string | undefined = undefined, pages = 0
+      do {
+        const body = nextToken ? { nextToken } : {}
+        const r = await fetch(`${ADS_API}/portfolios/list`, {
+          method: "POST",
+          headers: { ...authBase, "Content-Type": "application/vnd.spPortfolio.v3+json", Accept: "application/vnd.spPortfolio.v3+json" },
+          body: JSON.stringify(body),
+        })
+        if (!r.ok) break
+        const d = await r.json() as { portfolios?: Array<{ portfolioId: number | string; name: string }>; nextToken?: string }
+        for (const p of d.portfolios ?? []) names.set(String(p.portfolioId), p.name)
+        nextToken = d.nextToken; pages++
+      } while (nextToken && pages < 6)
     } catch (e) { console.error("portfolios", profileId, e instanceof Error ? e.message : String(e)) }
     if (names.size === 0) continue
 
