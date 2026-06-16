@@ -61,7 +61,7 @@ interface ConnectionRow {
   access_token_expires_at: string | null
   amazon_profile_ids: number[] | null
   pending_reports: PendingReport[]
-  synced_data: { campaigns: any[]; daily?: any[]; portfolioCheckedAt?: string; portfolioDebug?: any } | null
+  synced_data: { campaigns: any[]; daily?: any[]; dailyByMkt?: any[]; profiles?: any[]; portfolioCheckedAt?: string; portfolioDebug?: any } | null
   last_synced_at: string | null
 }
 
@@ -144,11 +144,19 @@ async function syncOne(
   // 1. Make sure we have a valid access_token
   const accessToken = await ensureAccessToken(supabase, conn, adsClientId, adsClientSecret)
 
-  // 2. Make sure we have a profile list
-  let profileIds = conn.amazon_profile_ids ?? []
+  // 2. Fetch profile metadata (country + currency) so synced data can be split
+  //    by marketplace. Falls back to the cached id list if the call fails.
+  let profileMeta: ProfileMeta[] = []
+  try {
+    profileMeta = await fetchProfileMeta(accessToken, adsClientId)
+  } catch (e) {
+    console.error("profile meta fetch failed", e instanceof Error ? e.message : String(e))
+  }
+  let profileIds = profileMeta.length > 0 ? profileMeta.map(p => p.profileId) : (conn.amazon_profile_ids ?? [])
   if (profileIds.length === 0) {
     profileIds = await listProfiles(accessToken, adsClientId)
   }
+  const profileMap = new Map(profileMeta.map(p => [p.profileId, p]))
 
   // 3. Process pending reports: poll status, ingest completed ones
   const pending: PendingReport[] = Array.isArray(conn.pending_reports) ? [...conn.pending_reports] : []
@@ -191,9 +199,16 @@ async function syncOne(
 
   // 4. Merge ingested data with existing synced_data (so unfinished profile
   //    reports from earlier sync waves don't get clobbered).
+  let sideDataChangedMkt = false
   let synced = conn.synced_data ?? { campaigns: [], daily: [] }
   if (ingestedRows.length > 0) {
-    synced = mergeReportRows(synced, ingestedRows)
+    synced = mergeReportRows(synced, ingestedRows, profileMap)
+  }
+  // Always keep the profile→marketplace map fresh on the synced blob (cheap,
+  // and the frontend marketplace selector reads it).
+  if (profileMeta.length > 0) {
+    synced.profiles = profileMeta
+    sideDataChangedMkt = true
   }
 
   // Enrich campaigns with portfolio names. The report columns can't carry
@@ -258,7 +273,7 @@ async function syncOne(
     last_synced_at: new Date().toISOString(),
     last_sync_error: reqError,
   }
-  if (ingestedRows.length > 0 || enriched) {
+  if (ingestedRows.length > 0 || enriched || sideDataChangedMkt) {
     updates.synced_data = synced
   }
   if (ingestedRows.length > 0) {
@@ -314,6 +329,21 @@ async function ensureAccessToken(
 }
 
 async function listProfiles(accessToken: string, clientId: string): Promise<number[]> {
+  const metas = await fetchProfileMeta(accessToken, clientId)
+  return metas.map(p => p.profileId)
+}
+
+interface ProfileMeta {
+  profileId: number
+  marketplace: string   // countryCode, e.g. "US" / "CA" / "MX"
+  currency: string      // currencyCode, e.g. "USD" / "CAD" / "MXN"
+  marketplaceId: string // Amazon marketplace string id
+}
+
+// Fetch each Ads profile's country + currency so synced data can be split by
+// marketplace (a seller with US/CA/MX profiles must not be summed into one
+// mixed-currency number).
+async function fetchProfileMeta(accessToken: string, clientId: string): Promise<ProfileMeta[]> {
   const resp = await fetch(`${AMAZON_ADS_API}/v2/profiles`, {
     headers: {
       "Authorization": `Bearer ${accessToken}`,
@@ -322,8 +352,18 @@ async function listProfiles(accessToken: string, clientId: string): Promise<numb
     },
   })
   if (!resp.ok) throw new Error(`Profile list failed: ${resp.status}`)
-  const profiles = await resp.json() as Array<{ profileId: number }>
-  return profiles.map(p => p.profileId)
+  const profiles = await resp.json() as Array<{
+    profileId: number
+    countryCode?: string
+    currencyCode?: string
+    accountInfo?: { marketplaceStringId?: string }
+  }>
+  return profiles.map(p => ({
+    profileId: p.profileId,
+    marketplace: p.countryCode ?? "US",
+    currency: p.currencyCode ?? "USD",
+    marketplaceId: p.accountInfo?.marketplaceStringId ?? "",
+  }))
 }
 
 // ---------- Portfolio mapping ----------
@@ -659,6 +699,9 @@ interface CampaignAccum {
   type: 'SP' | 'SB' | 'SD'
   portfolioId?: string
   state?: 'enabled' | 'paused' | 'archived'
+  profileId?: number
+  marketplace?: string
+  currency?: string
   impressions: number
   clicks: number
   spend: number
@@ -683,9 +726,10 @@ interface DailyAccum {
 }
 
 function mergeReportRows(
-  existing: { campaigns: any[]; daily?: any[] },
+  existing: { campaigns: any[]; daily?: any[]; dailyByMkt?: any[] },
   newRows: AmazonReportRow[],
-): { campaigns: any[]; daily: any[] } {
+  profileMap: Map<number, ProfileMeta>,
+): { campaigns: any[]; daily: any[]; dailyByMkt: any[] } {
   // Index existing for upsert
   const campaignMap = new Map<string, CampaignAccum>()
   for (const c of existing.campaigns ?? []) {
@@ -696,6 +740,9 @@ function mergeReportRows(
       type: c.type,
       portfolioId: c.portfolioId,
       state: c.state,
+      profileId: c.profileId,
+      marketplace: c.marketplace,
+      currency: c.currency,
       impressions: c.impressions ?? 0,
       clicks: c.clicks ?? 0,
       spend: c.spend ?? 0,
@@ -714,6 +761,15 @@ function mergeReportRows(
       clicks: d.clicks ?? 0,
     })
   }
+  // Per-marketplace daily, keyed "<marketplace>:<date>".
+  const dailyMktMap = new Map<string, DailyAccum & { marketplace: string }>()
+  for (const d of existing.dailyByMkt ?? []) {
+    dailyMktMap.set(`${d.marketplace}:${d.date}`, {
+      marketplace: d.marketplace, date: d.date,
+      spend: d.spend ?? 0, adSales: d.adSales ?? 0, orders: d.orders ?? 0,
+      impressions: d.impressions ?? 0, clicks: d.clicks ?? 0,
+    })
+  }
 
   // Aggregate new rows
   for (const r of newRows) {
@@ -723,13 +779,20 @@ function mergeReportRows(
     const key = `${product}:${cid}`
     const sales = r.sales7d ?? r.sales ?? 0
     const orders = r.purchases7d ?? r.purchases ?? 0
+    const meta = r._profileId != null ? profileMap.get(r._profileId) : undefined
+    const mkt = meta?.marketplace ?? 'US'
     const existing = campaignMap.get(key) ?? {
       campaign: r.campaignName ?? cid,
       campaignId: cid,
       type: product,
       portfolioId: r.portfolioId ? String(r.portfolioId) : undefined,
+      profileId: r._profileId,
+      marketplace: mkt,
+      currency: meta?.currency ?? 'USD',
       impressions: 0, clicks: 0, spend: 0, adSales: 0, orders: 0,
     }
+    // Keep marketplace/currency current even for pre-existing campaigns.
+    if (meta) { existing.profileId = r._profileId; existing.marketplace = mkt; existing.currency = meta.currency }
     const st = normalizeState(r.campaignStatus)
     if (st) existing.state = st
     existing.impressions += r.impressions ?? 0
@@ -740,6 +803,12 @@ function mergeReportRows(
     campaignMap.set(key, existing)
 
     if (r.date) {
+      const mk = `${mkt}:${r.date}`
+      const dm = dailyMktMap.get(mk) ?? { marketplace: mkt, date: r.date, spend: 0, adSales: 0, orders: 0, impressions: 0, clicks: 0 }
+      dm.spend += r.cost ?? 0; dm.adSales += sales; dm.orders += orders
+      dm.impressions += r.impressions ?? 0; dm.clicks += r.clicks ?? 0
+      dailyMktMap.set(mk, dm)
+
       const day = dailyMap.get(r.date) ?? { date: r.date, spend: 0, adSales: 0, orders: 0, impressions: 0, clicks: 0 }
       day.spend += r.cost ?? 0
       day.adSales += sales
@@ -763,6 +832,8 @@ function mergeReportRows(
       type: c.type,
       portfolioId: c.portfolioId,
       state: c.state,
+      marketplace: c.marketplace,
+      currency: c.currency,
       impressions: c.impressions, clicks: c.clicks, spend: c.spend,
       adSales: c.adSales, orders: c.orders,
       ctr, cvr, roas, acos, cpc,
@@ -775,8 +846,15 @@ function mergeReportRows(
       cvr: d.clicks ? (d.orders / d.clicks) * 100 : 0,
     }))
     .sort((a, b) => a.date.localeCompare(b.date))
+  const dailyByMkt = Array.from(dailyMktMap.values())
+    .map(d => ({
+      ...d,
+      ctr: d.impressions ? (d.clicks / d.impressions) * 100 : 0,
+      cvr: d.clicks ? (d.orders / d.clicks) * 100 : 0,
+    }))
+    .sort((a, b) => a.date.localeCompare(b.date))
 
-  return { campaigns, daily }
+  return { campaigns, daily, dailyByMkt }
 }
 
 function isoDate(d: Date): string {
