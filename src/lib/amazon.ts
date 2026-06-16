@@ -32,6 +32,7 @@ export interface SyncedCampaign {
   campaign: string
   campaignId?: string
   type: 'SP' | 'SB' | 'SD' | 'OTHER'
+  state?: 'enabled' | 'paused' | 'archived'
   portfolioId?: string
   portfolio?: string
   impressions: number

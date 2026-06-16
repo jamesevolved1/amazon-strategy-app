@@ -234,6 +234,8 @@ function mergeAds(existing: any, rows: any[]) {
     const sales = r.sales7d ?? r.sales ?? 0, orders = r.purchases7d ?? r.purchases ?? 0
     const k = `${product}:${cid}`
     const c = cmap.get(k) ?? { campaign: r.campaignName ?? cid, campaignId: cid, type: product, impressions: 0, clicks: 0, spend: 0, adSales: 0, orders: 0 }
+    const st = String(r.campaignStatus ?? "").toLowerCase()
+    if (st === "enabled" || st === "paused" || st === "archived") c.state = st
     c.impressions += r.impressions ?? 0; c.clicks += r.clicks ?? 0; c.spend += r.cost ?? 0; c.adSales += sales; c.orders += orders
     cmap.set(k, c)
     if (r.date) {

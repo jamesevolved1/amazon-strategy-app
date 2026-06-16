@@ -658,11 +658,19 @@ interface CampaignAccum {
   campaignId: string
   type: 'SP' | 'SB' | 'SD'
   portfolioId?: string
+  state?: 'enabled' | 'paused' | 'archived'
   impressions: number
   clicks: number
   spend: number
   adSales: number
   orders: number
+}
+
+// Normalize Amazon's campaignStatus ("ENABLED"/"PAUSED"/"ARCHIVED") to our
+// lowercase enum. Returns undefined for anything unexpected.
+function normalizeState(s: unknown): 'enabled' | 'paused' | 'archived' | undefined {
+  const v = String(s ?? '').toLowerCase()
+  return v === 'enabled' || v === 'paused' || v === 'archived' ? v : undefined
 }
 
 interface DailyAccum {
@@ -687,6 +695,7 @@ function mergeReportRows(
       campaignId: String(c.campaignId ?? ''),
       type: c.type,
       portfolioId: c.portfolioId,
+      state: c.state,
       impressions: c.impressions ?? 0,
       clicks: c.clicks ?? 0,
       spend: c.spend ?? 0,
@@ -721,6 +730,8 @@ function mergeReportRows(
       portfolioId: r.portfolioId ? String(r.portfolioId) : undefined,
       impressions: 0, clicks: 0, spend: 0, adSales: 0, orders: 0,
     }
+    const st = normalizeState(r.campaignStatus)
+    if (st) existing.state = st
     existing.impressions += r.impressions ?? 0
     existing.clicks += r.clicks ?? 0
     existing.spend += r.cost ?? 0
@@ -751,6 +762,7 @@ function mergeReportRows(
       campaignId: c.campaignId,
       type: c.type,
       portfolioId: c.portfolioId,
+      state: c.state,
       impressions: c.impressions, clicks: c.clicks, spend: c.spend,
       adSales: c.adSales, orders: c.orders,
       ctr, cvr, roas, acos, cpc,

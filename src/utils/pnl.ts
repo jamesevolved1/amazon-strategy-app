@@ -343,6 +343,60 @@ export function adProductSummary(campaigns: CampaignRow[]) {
   return groups
 }
 
+export interface PortfolioGroup {
+  name: string
+  count: number
+  spend: number
+  sales: number
+  orders: number
+  impressions: number
+  clicks: number
+  roas: number
+  acos: number
+  cpc: number
+  ctr: number
+  cvr: number
+  shareSpend: number   // % of total ad spend
+  shareSales: number   // % of total ad sales
+  unassigned: boolean
+}
+
+// Roll campaigns up by Amazon portfolio. Campaigns with no portfolio collapse
+// into a single "Unassigned" group, which is always sorted last. Ratios are
+// recomputed from the summed raw metrics (never averaged) so they stay exact.
+export function portfolioSummary(campaigns: CampaignRow[]): PortfolioGroup[] {
+  const totalSpend = sum(campaigns.map(c => c.spend))
+  const totalSales = sum(campaigns.map(c => c.adSales))
+  const map = new Map<string, { name: string; count: number; spend: number; sales: number; orders: number; impressions: number; clicks: number; unassigned: boolean }>()
+  for (const c of campaigns) {
+    const named = c.portfolio && c.portfolio.trim()
+    const name = named ? c.portfolio!.trim() : 'Unassigned'
+    const g = map.get(name) ?? { name, count: 0, spend: 0, sales: 0, orders: 0, impressions: 0, clicks: 0, unassigned: !named }
+    g.count += 1
+    g.spend += c.spend || 0
+    g.sales += c.adSales || 0
+    g.orders += c.orders || 0
+    g.impressions += c.impressions || 0
+    g.clicks += c.clicks || 0
+    map.set(name, g)
+  }
+  const groups: PortfolioGroup[] = Array.from(map.values()).map(g => ({
+    ...g,
+    roas: g.spend > 0 ? g.sales / g.spend : 0,
+    acos: g.sales > 0 ? (g.spend / g.sales) * 100 : 0,
+    cpc: g.clicks > 0 ? g.spend / g.clicks : 0,
+    ctr: g.impressions > 0 ? (g.clicks / g.impressions) * 100 : 0,
+    cvr: g.clicks > 0 ? (g.orders / g.clicks) * 100 : 0,
+    shareSpend: totalSpend > 0 ? (g.spend / totalSpend) * 100 : 0,
+    shareSales: totalSales > 0 ? (g.sales / totalSales) * 100 : 0,
+  }))
+  groups.sort((a, b) => {
+    if (a.unassigned !== b.unassigned) return a.unassigned ? 1 : -1
+    return b.spend - a.spend
+  })
+  return groups
+}
+
 // ---------- Month projection ----------
 
 export interface MonthProjection {

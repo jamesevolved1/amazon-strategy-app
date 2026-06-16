@@ -12,9 +12,10 @@ import {
 import { useStore } from '../lib/store'
 import { Panel, Pill, SegmentedControl, EmptyState, Button, cx, Delta } from '../components/ui'
 import { KPICard } from '../components/KPICard'
-import { compact, currency, dateRangeLabel, daysBetween, deltaPct, num, percent, relativeTime, timestamp } from '../lib/format'
+import { compact, currency, dateRangeLabel, daysBetween, deltaPct, multiplier, num, percent, relativeTime, timestamp } from '../lib/format'
 import {
-  adProductSummary, totalsFromSeries, projectCurrentMonth, type ReportingTotals, type MonthProjection,
+  adProductSummary, portfolioSummary, totalsFromSeries, projectCurrentMonth,
+  type ReportingTotals, type MonthProjection, type PortfolioGroup,
 } from '../utils/pnl'
 import { customRange, resolveRange, sliceSeries, type RangePreset } from '../utils/dateRange'
 import { useSpApiConnections } from '../lib/spapi'
@@ -28,6 +29,7 @@ export function ReportingDashboard() {
   const [customEnd, setCustomEnd] = useState('')
   const [campaignSearch, setCampaignSearch] = useState('')
   const [campaignFilter, setCampaignFilter] = useState<'all' | 'SP' | 'SB' | 'OTHER'>('all')
+  const [campaignStateFilter, setCampaignStateFilter] = useState<'all' | 'enabled' | 'paused' | 'archived'>('all')
   const [campaignPortfolio, setCampaignPortfolio] = useState<string>('all')
   const [campaignSort, setCampaignSort] = useState<'spend' | 'sales' | 'orders' | 'roas'>('spend')
 
@@ -213,6 +215,7 @@ export function ReportingDashboard() {
         campaign: c.campaign,
         campaignId: c.campaignId,
         type: c.type,
+        state: c.state,
         portfolioId: c.portfolioId,
         portfolio: c.portfolio,
         impressions: c.impressions,
@@ -230,6 +233,7 @@ export function ReportingDashboard() {
     return bulk?.campaigns ?? []
   }, [syncedCampaigns, bulk])
   const adSummary = useMemo(() => adProductSummary(campaigns), [campaigns])
+  const portfolioRollup = useMemo(() => portfolioSummary(campaigns), [campaigns])
   const projection = useMemo(() => projectCurrentMonth(series, currentBundle.goals), [series, currentBundle.goals])
 
   const portfolios = useMemo(() => {
@@ -243,10 +247,26 @@ export function ReportingDashboard() {
     return { list, unassigned }
   }, [campaigns])
 
+  // Campaign state counts (enabled/paused/archived). Campaigns whose state we
+  // haven't synced yet count as enabled so the default view is never empty.
+  const stateCounts = useMemo(() => {
+    let enabled = 0, paused = 0, archived = 0
+    for (const c of campaigns) {
+      if (c.state === 'paused') paused++
+      else if (c.state === 'archived') archived++
+      else enabled++
+    }
+    return { all: campaigns.length, enabled, paused, archived }
+  }, [campaigns])
+
   const filteredCampaigns = useMemo(() => {
     let rows = campaigns
     if (campaignFilter === 'OTHER') rows = rows.filter(c => c.type === 'SD' || c.type === 'OTHER')
     else if (campaignFilter !== 'all') rows = rows.filter(c => c.type === campaignFilter)
+    if (campaignStateFilter !== 'all') {
+      const effective = (c: typeof rows[number]) => c.state ?? 'enabled'
+      rows = rows.filter(c => effective(c) === campaignStateFilter)
+    }
     if (campaignPortfolio !== 'all') {
       if (campaignPortfolio === '__none__') rows = rows.filter(c => !c.portfolio)
       else rows = rows.filter(c => c.portfolio === campaignPortfolio)
@@ -263,7 +283,7 @@ export function ReportingDashboard() {
       case 'roas': rows.sort((a, b) => b.roas - a.roas); break
     }
     return rows
-  }, [campaigns, campaignFilter, campaignPortfolio, campaignSearch, campaignSort])
+  }, [campaigns, campaignFilter, campaignStateFilter, campaignPortfolio, campaignSearch, campaignSort])
 
   const hasData = series.length > 0 || campaigns.length > 0
   const synced = lastUploadAt(currentBundle)
@@ -467,6 +487,15 @@ export function ReportingDashboard() {
 
       <SalesMix totals={totals} ccy={currentClient.currency} />
 
+      {portfolioRollup.some(p => !p.unassigned) && (
+        <PortfolioRollup
+          groups={portfolioRollup}
+          ccy={currentClient.currency}
+          targetRoas={currentBundle.goals.targetRoas}
+          minRoas={currentBundle.goals.minimumAcceptableRoas}
+        />
+      )}
+
       <CampaignTable
         campaigns={filteredCampaigns}
         ccy={currentClient.currency}
@@ -474,6 +503,9 @@ export function ReportingDashboard() {
         onSearch={setCampaignSearch}
         filter={campaignFilter}
         onFilter={setCampaignFilter}
+        stateFilter={campaignStateFilter}
+        onStateFilter={setCampaignStateFilter}
+        stateCounts={stateCounts}
         portfolios={portfolios}
         portfolio={campaignPortfolio}
         onPortfolio={setCampaignPortfolio}
@@ -850,6 +882,64 @@ function SalesMix({ totals, ccy }: { totals: ReportingTotals; ccy: import('../ty
   )
 }
 
+function PortfolioRollup({ groups, ccy, targetRoas, minRoas }: {
+  groups: PortfolioGroup[]
+  ccy: import('../types').Currency
+  targetRoas: number
+  minRoas: number
+}) {
+  const named = groups.filter(g => !g.unassigned)
+  const roasTone = (r: number): 'mint' | 'peri' | 'blush' =>
+    r >= targetRoas ? 'mint' : r >= minRoas ? 'peri' : 'blush'
+  const cols = 'grid grid-cols-[2fr_1fr_1fr_auto_1.4fr] gap-3 items-center'
+  return (
+    <Panel>
+      <div className="flex items-end justify-between mb-3">
+        <div>
+          <h2 className="text-base font-semibold text-ink">By portfolio</h2>
+          <p className="text-xs text-ink-mute mt-0.5">Spend, sales &amp; ROAS across your Amazon portfolios</p>
+        </div>
+        <Pill tone="mute">{num(named.length)} portfolio{named.length === 1 ? '' : 's'}</Pill>
+      </div>
+      <div className="overflow-x-auto -mx-1 px-1">
+        <div className="min-w-[640px]">
+          <div className={cx(cols, 'px-2 pb-2 text-2xs uppercase tracking-wider text-ink-faint font-semibold border-b border-line')}>
+            <span>Portfolio</span>
+            <span className="text-right">Spend</span>
+            <span className="text-right">Ad sales</span>
+            <span className="text-right">ROAS</span>
+            <span>Share of spend</span>
+          </div>
+          {groups.map(g => (
+            <div key={g.name} className={cx(cols, 'px-2 py-2.5 border-b border-line/60 last:border-0')}>
+              <div className="min-w-0">
+                <div className={cx('text-sm font-medium truncate', g.unassigned ? 'text-ink-mute italic' : 'text-ink')}>{g.name}</div>
+                <div className="text-2xs text-ink-faint tnum">{num(g.count)} campaign{g.count === 1 ? '' : 's'} · {num(g.orders)} orders</div>
+              </div>
+              <div className="text-right tnum text-sm text-ink">{currency(g.spend, ccy)}</div>
+              <div className="text-right tnum text-sm text-ink">{currency(g.sales, ccy)}</div>
+              <div className="text-right">
+                {g.spend > 0
+                  ? <Pill tone={roasTone(g.roas)}>{multiplier(g.roas)}</Pill>
+                  : <span className="text-2xs text-ink-faint">—</span>}
+              </div>
+              <div className="flex items-center gap-2">
+                <div className="flex-1 h-1.5 rounded-full bg-[#f1f2f5] overflow-hidden">
+                  <div
+                    className={cx('h-full rounded-full', g.unassigned ? 'bg-ink-faint' : 'bg-accent-peri')}
+                    style={{ width: `${Math.min(100, Math.max(2, g.shareSpend))}%` }}
+                  />
+                </div>
+                <span className="tnum text-2xs text-ink-mute w-9 text-right">{percent(g.shareSpend, 0)}</span>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </Panel>
+  )
+}
+
 function Stat({ label, value, hint, tone }: { label: string; value: React.ReactNode; hint?: string; tone: 'peri' | 'mint' | 'gold' | 'lavender' | 'blush' }) {
   const stripe: Record<string, string> = {
     peri: 'bg-accent-peri', mint: 'bg-accent-mint', gold: 'bg-accent-gold', lavender: 'bg-accent-lavender', blush: 'bg-accent-blush',
@@ -865,12 +955,14 @@ function Stat({ label, value, hint, tone }: { label: string; value: React.ReactN
 }
 
 function CampaignTable({
-  campaigns, ccy, search, onSearch, filter, onFilter, portfolios, portfolio, onPortfolio, sort, onSort, totalRowCount,
+  campaigns, ccy, search, onSearch, filter, onFilter, stateFilter, onStateFilter, stateCounts, portfolios, portfolio, onPortfolio, sort, onSort, totalRowCount,
 }: {
   campaigns: CampaignRow[]
   ccy: import('../types').Currency
   search: string; onSearch: (v: string) => void
   filter: 'all' | 'SP' | 'SB' | 'OTHER'; onFilter: (v: 'all' | 'SP' | 'SB' | 'OTHER') => void
+  stateFilter: 'all' | 'enabled' | 'paused' | 'archived'; onStateFilter: (v: 'all' | 'enabled' | 'paused' | 'archived') => void
+  stateCounts: { all: number; enabled: number; paused: number; archived: number }
   portfolios: { list: string[]; unassigned: number }
   portfolio: string; onPortfolio: (v: string) => void
   sort: 'spend' | 'sales' | 'orders' | 'roas'; onSort: (v: 'spend' | 'sales' | 'orders' | 'roas') => void
@@ -909,6 +1001,17 @@ function CampaignTable({
               { id: 'OTHER', label: `Other (${num(campaigns.filter(c => c.type === 'SD' || c.type === 'OTHER').length)})` },
             ]}
           />
+          <select
+            value={stateFilter}
+            onChange={e => onStateFilter(e.target.value as 'all' | 'enabled' | 'paused' | 'archived')}
+            className="px-3 py-1.5 rounded-full border border-line text-xs bg-canvas-panel"
+            title="Filter by campaign state"
+          >
+            <option value="all">All states ({num(stateCounts.all)})</option>
+            <option value="enabled">Enabled ({num(stateCounts.enabled)})</option>
+            <option value="paused">Paused ({num(stateCounts.paused)})</option>
+            {stateCounts.archived > 0 && <option value="archived">Archived ({num(stateCounts.archived)})</option>}
+          </select>
           {(portfolios.list.length > 0 || portfolios.unassigned > 0) && (
             <select
               value={portfolio}
