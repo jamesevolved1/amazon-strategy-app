@@ -40,6 +40,30 @@ export interface SpApiSyncedDaily {
   pageViews: number
 }
 
+// Actual settled fees over a trailing window (SP-API Finances API).
+export interface SpApiFees {
+  principal: number      // gross product sales (item Principal charges)
+  referralFees: number   // Amazon commission / referral
+  fbaFees: number        // FBA fulfillment fees
+  otherFees: number      // everything else (variable closing, etc.)
+  refunds: number        // principal refunded
+  promotions: number     // promotion / coupon discounts
+  windowDays: number
+  updatedAt: string
+}
+
+// Per-SKU FBA inventory (SP-API FBA Inventory API).
+export interface SpApiInventoryItem {
+  sku: string
+  asin: string
+  fnSku: string
+  name: string
+  available: number
+  inbound: number
+  reserved: number
+  total: number
+}
+
 export interface SpApiConnection {
   id: string
   app_client_id: string
@@ -49,7 +73,11 @@ export interface SpApiConnection {
   region: string
   refresh_token: string
   pending_reports: Array<{ reportId: string; status: string; startDate: string; endDate: string }>
-  synced_data: { daily: SpApiSyncedDaily[] } | null
+  synced_data: {
+    daily: SpApiSyncedDaily[]
+    fees?: SpApiFees
+    inventory?: SpApiInventoryItem[]
+  } | null
   synced_data_at: string | null
   last_synced_at: string | null
   last_sync_error: string | null

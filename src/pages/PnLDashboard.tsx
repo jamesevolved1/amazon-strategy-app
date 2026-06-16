@@ -4,6 +4,7 @@ import { Panel, Pill, Button, EmptyState, cx, TextField, NumberField, SegmentedC
 import { KPICard } from '../components/KPICard'
 import { DataQualityWarnings } from '../components/DataQualityWarnings'
 import { useStore } from '../lib/store'
+import { useSpApiConnections, type SpApiFees } from '../lib/spapi'
 import { currency, num, percent, signed } from '../lib/format'
 import { mergeReportsIntoSkus, statusLabel, statusTone, type MergedReports } from '../utils/pnl'
 import type { SkuRow } from '../types'
@@ -19,10 +20,14 @@ export function PnLDashboard() {
   const [statusFilter, setStatusFilter] = useState<'all' | SkuRow['status']>('all')
   const [expanded, setExpanded] = useState<string | null>(null)
   const [view, setView] = useState<'scenario' | 'current'>('current')
+  const { connections: spapiConnections } = useSpApiConnections()
 
   if (!currentClient || !currentBundle) {
     return <EmptyState title="No client selected" description="Add or switch to a client to view its P&L." />
   }
+
+  // Actual settled fees from SP-API Finances (no upload needed).
+  const spFees = spapiConnections.find(c => c.app_client_id === currentClient.id)?.synced_data?.fees ?? null
 
   const reports: MergedReports = useMemo(() => ({
     masterProfit: currentBundle.reports.masterProfit?.parsed as MasterProfitData | undefined,
@@ -63,10 +68,17 @@ export function PnLDashboard() {
 
   if (sourceForView.skus.length === 0) {
     return (
-      <EmptyState
-        title="No SKU data yet"
-        description="Upload the Master Profit Matrix workbook (or Advertised Product + COGS Mapping) to populate the P&L."
-      />
+      <div className="space-y-5">
+        <header>
+          <h1 className="text-xl font-semibold text-ink">P&L Dashboard</h1>
+          <p className="text-sm text-ink-mute mt-0.5">{currentClient.name}</p>
+        </header>
+        {spFees && <RealFeesPanel fees={spFees} ccy={currentClient.currency} />}
+        <EmptyState
+          title="No SKU data yet"
+          description="Upload the Master Profit Matrix workbook (or Advertised Product + COGS Mapping) to populate per-SKU profitability. Real settled fees above come straight from Amazon — no upload needed."
+        />
+      </div>
     )
   }
 
@@ -101,6 +113,8 @@ export function PnLDashboard() {
         <KPICard label="Units" tone="blush" icon={<Package className="w-3.5 h-3.5" />} value={num(totals.units)} />
         <KPICard label="SKU Health" tone="mint" icon={<Activity className="w-3.5 h-3.5" />} value={`${num(healthCounts.profit_leader + healthCounts.scale_candidate)} healthy`} secondary={`${num(healthCounts.unprofitable)} unprofitable`} />
       </div>
+
+      {spFees && <RealFeesPanel fees={spFees} ccy={currentClient.currency} />}
 
       <ScenarioControls
         scenarios={currentBundle.scenarios}
@@ -207,6 +221,63 @@ export function PnLDashboard() {
           </div>
         )}
       </Panel>
+    </div>
+  )
+}
+
+function RealFeesPanel({ fees, ccy }: { fees: SpApiFees; ccy: import('../types').Currency }) {
+  const totalFees = fees.referralFees + fees.fbaFees + fees.otherFees
+  const net = fees.principal - totalFees - fees.refunds - fees.promotions
+  const feeRate = fees.principal > 0 ? (totalFees / fees.principal) * 100 : 0
+  const items: Array<{ label: string; value: number; tone: string }> = [
+    { label: 'Referral fees', value: fees.referralFees, tone: 'bg-accent-peri' },
+    { label: 'FBA fees', value: fees.fbaFees, tone: 'bg-accent-lavender' },
+    { label: 'Other fees', value: fees.otherFees, tone: 'bg-accent-gold' },
+    { label: 'Refunds', value: fees.refunds, tone: 'bg-accent-blush' },
+    { label: 'Promotions', value: fees.promotions, tone: 'bg-ink-faint' },
+  ]
+  const maxItem = Math.max(...items.map(i => i.value), 1)
+  return (
+    <Panel>
+      <div className="flex items-end justify-between mb-4 flex-wrap gap-2">
+        <div>
+          <h2 className="text-base font-semibold text-ink">Real settled fees</h2>
+          <p className="text-xs text-ink-mute mt-0.5">Actual charges from Amazon · last {num(fees.windowDays)} days · via SP-API Finances</p>
+        </div>
+        <Pill tone="mint">Live from Amazon</Pill>
+      </div>
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+        <FeeStat label="Gross sales" value={currency(fees.principal, ccy)} hint="item principal" tone="lavender" />
+        <FeeStat label="Total fees" value={currency(totalFees, ccy)} hint={`${percent(feeRate, 1)} of sales`} tone="peri" />
+        <FeeStat label="Refunds + promos" value={currency(fees.refunds + fees.promotions, ccy)} tone="blush" />
+        <FeeStat label="Net proceeds" value={currency(net, ccy)} hint="before COGS & ads" tone="mint" />
+      </div>
+      <div className="space-y-2">
+        {items.map(it => (
+          <div key={it.label} className="flex items-center gap-3">
+            <span className="w-28 text-xs text-ink-mute shrink-0">{it.label}</span>
+            <div className="flex-1 h-2 rounded-full bg-[#f1f2f5] overflow-hidden">
+              <div className={cx('h-full rounded-full', it.tone)} style={{ width: `${Math.min(100, Math.max(1, (it.value / maxItem) * 100))}%` }} />
+            </div>
+            <span className="w-24 text-right text-xs tnum text-ink">{currency(it.value, ccy)}</span>
+          </div>
+        ))}
+      </div>
+      <p className="text-2xs text-ink-faint mt-3">
+        Net proceeds = gross sales − fees − refunds − promotions. Subtract COGS and ad spend for true profit.
+      </p>
+    </Panel>
+  )
+}
+
+function FeeStat({ label, value, hint, tone = 'lavender' }: { label: string; value: string; hint?: string; tone?: 'peri' | 'mint' | 'blush' | 'lavender' }) {
+  const stripe: Record<string, string> = { peri: 'bg-accent-peri', mint: 'bg-accent-mint', blush: 'bg-accent-blush', lavender: 'bg-accent-lavender' }
+  return (
+    <div className="relative rounded-lg border border-line p-3">
+      <div className={cx('absolute left-3 right-3 top-0 h-[2px] rounded-b-full', stripe[tone])} />
+      <div className="text-2xs uppercase tracking-wider text-ink-mute font-semibold">{label}</div>
+      <div className="mt-1 tnum text-lg font-semibold text-ink">{value}</div>
+      {hint && <div className="text-2xs text-ink-faint mt-0.5">{hint}</div>}
     </div>
   )
 }
