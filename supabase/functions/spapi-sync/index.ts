@@ -172,11 +172,15 @@ async function syncOne(
 
   // Real settlement fees (Finances API) + FBA inventory. Both are additive and
   // NON-FATAL: a missing role / 403 is captured into a diagnostic blob rather
-  // than thrown, so the Sales & Traffic flow keeps working. Each result is
-  // cached and only refreshed when stale, to respect tight rate limits.
+  // than thrown, so the Sales & Traffic flow keeps working. Successful results
+  // are cached for 6h (tight rate limits); a prior FAILURE is never cached —
+  // we retry it every sync so a freshly-granted role / re-auth is picked up
+  // immediately without manual cache-clearing.
   let sideDataChanged = false
   const lastFeeCheck = synced.feesCheckedAt ? new Date(synced.feesCheckedAt).getTime() : 0
-  const feesStale = Date.now() - lastFeeCheck > 6 * 60 * 60 * 1000 // 6h
+  const errored = (d: any) => Boolean(d && (d.error || (d.status && d.status !== 200)))
+  const priorFailure = errored(synced.financeDebug) || errored(synced.inventoryDebug)
+  const feesStale = !synced.feesCheckedAt || Date.now() - lastFeeCheck > 6 * 60 * 60 * 1000 || priorFailure
   if (feesStale) {
     const mp = pickMarketplace(marketplaceIds, conn.region)
     try {
