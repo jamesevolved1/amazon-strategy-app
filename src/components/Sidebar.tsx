@@ -1,13 +1,13 @@
 import React, { useEffect, useState } from 'react'
 import {
-  BarChart3, LineChart, Boxes, Target, ClipboardCheck, CalendarDays, Upload, Users, Settings, Plus, ChevronsUpDown, Check, Trash2, PanelLeftClose, PanelLeftOpen,
+  BarChart3, LineChart, Boxes, Target, ClipboardCheck, CalendarDays, Upload, Users, Settings, Plus, ChevronsUpDown, Check, Trash2, PanelLeftClose, PanelLeftOpen, Megaphone,
 } from 'lucide-react'
 import { useStore } from '../lib/store'
 import { cx } from './ui'
 import type { Marketplace } from '../types'
 
 export type PageId =
-  | 'reporting' | 'pnl' | 'parent' | 'adPotential' | 'performance'
+  | 'reporting' | 'campaigns' | 'pnl' | 'parent' | 'adPotential' | 'performance'
   | 'optimization' | 'upload' | 'clients' | 'settings'
 
 interface Item {
@@ -18,6 +18,7 @@ interface Item {
 
 const NAV: Item[] = [
   { id: 'reporting',    label: 'Reporting Dashboard', icon: <LineChart className="w-4 h-4" /> },
+  { id: 'campaigns',    label: 'Campaign Manager',     icon: <Megaphone className="w-4 h-4" /> },
   { id: 'pnl',          label: 'P&L Dashboard',        icon: <BarChart3 className="w-4 h-4" /> },
   { id: 'parent',       label: 'Parent ASIN P&L',      icon: <Boxes className="w-4 h-4" /> },
   { id: 'adPotential',  label: 'Ad Potential',         icon: <Target className="w-4 h-4" /> },

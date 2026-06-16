@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import {
   Plane, ShoppingCart, Target as TargetIcon, TrendingUp, Package, Megaphone, Eye, MousePointerClick, Percent, BarChart3 as BarIcon, ArrowUpRight,
-  RefreshCcw, PlayCircle, Search, CheckCircle2, AlertTriangle,
+  RefreshCcw, PlayCircle, CheckCircle2, AlertTriangle,
 } from 'lucide-react'
 import { Spinner } from '../components/ui'
 import { triggerSync, useAmazonConnections } from '../lib/amazon'
@@ -12,11 +12,12 @@ import {
 import { useStore } from '../lib/store'
 import { Panel, Pill, SegmentedControl, EmptyState, Button, cx, Delta } from '../components/ui'
 import { KPICard } from '../components/KPICard'
-import { compact, currency, dateRangeLabel, daysBetween, deltaPct, multiplier, num, percent, relativeTime, timestamp } from '../lib/format'
+import { compact, currency, dateRangeLabel, daysBetween, deltaPct, num, percent, relativeTime, timestamp } from '../lib/format'
 import {
-  adProductSummary, portfolioSummary, totalsFromSeries, projectCurrentMonth,
-  type ReportingTotals, type MonthProjection, type PortfolioGroup,
+  adProductSummary, totalsFromSeries, projectCurrentMonth,
+  type ReportingTotals, type MonthProjection,
 } from '../utils/pnl'
+import { mapCampaignRows } from '../lib/campaignData'
 import { customRange, resolveRange, sliceSeries, type RangePreset } from '../utils/dateRange'
 import { useSpApiConnections } from '../lib/spapi'
 import type { BulkCampaignData, BusinessReportData } from '../utils/parsers'
@@ -27,12 +28,6 @@ export function ReportingDashboard() {
   const [preset, setPreset] = useState<RangePreset>('7d')
   const [customStart, setCustomStart] = useState('')
   const [customEnd, setCustomEnd] = useState('')
-  const [campaignSearch, setCampaignSearch] = useState('')
-  const [campaignFilter, setCampaignFilter] = useState<'all' | 'SP' | 'SB' | 'OTHER'>('all')
-  const [campaignStateFilter, setCampaignStateFilter] = useState<'all' | 'enabled' | 'paused' | 'archived'>('all')
-  const [campaignPortfolio, setCampaignPortfolio] = useState<string>('all')
-  const [campaignSort, setCampaignSort] = useState<'spend' | 'sales' | 'orders' | 'roas'>('spend')
-
   const { connections, refresh: refreshConnections } = useAmazonConnections()
   const { connections: spapiConnections, refresh: refreshSpApi } = useSpApiConnections()
   const [syncing, setSyncing] = useState(false)
@@ -208,82 +203,12 @@ export function ReportingDashboard() {
   const totals = useMemo(() => totalsFromSeries(slice, range?.days), [slice, range])
   const prevTotals = useMemo(() => totalsFromSeries(prev, range ? daysBetween(range.prevStart, range.prevEnd) : 0), [prev, range])
 
-  // Prefer synced campaigns from Amazon API; fall back to uploaded bulk export
-  const campaigns: CampaignRow[] = useMemo(() => {
-    if (syncedCampaigns && syncedCampaigns.length > 0) {
-      return syncedCampaigns.map(c => ({
-        campaign: c.campaign,
-        campaignId: c.campaignId,
-        type: c.type,
-        state: c.state,
-        portfolioId: c.portfolioId,
-        portfolio: c.portfolio,
-        impressions: c.impressions,
-        clicks: c.clicks,
-        spend: c.spend,
-        adSales: c.adSales,
-        orders: c.orders,
-        ctr: c.ctr,
-        cvr: c.cvr,
-        roas: c.roas,
-        acos: c.acos,
-        cpc: c.cpc,
-      }))
-    }
-    return bulk?.campaigns ?? []
-  }, [syncedCampaigns, bulk])
+  // Prefer synced campaigns from Amazon API; fall back to uploaded bulk export.
+  // Only used here for the high-level "By ad product" mix — the granular
+  // portfolio rollup + campaign table live on the Campaign Manager page.
+  const campaigns: CampaignRow[] = useMemo(() => mapCampaignRows(syncedCampaigns, bulk), [syncedCampaigns, bulk])
   const adSummary = useMemo(() => adProductSummary(campaigns), [campaigns])
-  const portfolioRollup = useMemo(() => portfolioSummary(campaigns), [campaigns])
   const projection = useMemo(() => projectCurrentMonth(series, currentBundle.goals), [series, currentBundle.goals])
-
-  const portfolios = useMemo(() => {
-    const set = new Set<string>()
-    let unassigned = 0
-    for (const c of campaigns) {
-      if (c.portfolio) set.add(c.portfolio)
-      else unassigned++
-    }
-    const list = Array.from(set).sort((a, b) => a.localeCompare(b))
-    return { list, unassigned }
-  }, [campaigns])
-
-  // Campaign state counts (enabled/paused/archived). Campaigns whose state we
-  // haven't synced yet count as enabled so the default view is never empty.
-  const stateCounts = useMemo(() => {
-    let enabled = 0, paused = 0, archived = 0
-    for (const c of campaigns) {
-      if (c.state === 'paused') paused++
-      else if (c.state === 'archived') archived++
-      else enabled++
-    }
-    return { all: campaigns.length, enabled, paused, archived }
-  }, [campaigns])
-
-  const filteredCampaigns = useMemo(() => {
-    let rows = campaigns
-    if (campaignFilter === 'OTHER') rows = rows.filter(c => c.type === 'SD' || c.type === 'OTHER')
-    else if (campaignFilter !== 'all') rows = rows.filter(c => c.type === campaignFilter)
-    if (campaignStateFilter !== 'all') {
-      const effective = (c: typeof rows[number]) => c.state ?? 'enabled'
-      rows = rows.filter(c => effective(c) === campaignStateFilter)
-    }
-    if (campaignPortfolio !== 'all') {
-      if (campaignPortfolio === '__none__') rows = rows.filter(c => !c.portfolio)
-      else rows = rows.filter(c => c.portfolio === campaignPortfolio)
-    }
-    if (campaignSearch.trim()) {
-      const q = campaignSearch.trim().toLowerCase()
-      rows = rows.filter(c => c.campaign.toLowerCase().includes(q) || (c.campaignId ?? '').toLowerCase().includes(q) || (c.product ?? '').toLowerCase().includes(q) || (c.portfolio ?? '').toLowerCase().includes(q))
-    }
-    rows = rows.slice()
-    switch (campaignSort) {
-      case 'spend': rows.sort((a, b) => b.spend - a.spend); break
-      case 'sales': rows.sort((a, b) => b.adSales - a.adSales); break
-      case 'orders': rows.sort((a, b) => b.orders - a.orders); break
-      case 'roas': rows.sort((a, b) => b.roas - a.roas); break
-    }
-    return rows
-  }, [campaigns, campaignFilter, campaignStateFilter, campaignPortfolio, campaignSearch, campaignSort])
 
   const hasData = series.length > 0 || campaigns.length > 0
   const synced = lastUploadAt(currentBundle)
@@ -486,33 +411,6 @@ export function ReportingDashboard() {
       {projection && <ProjectionPanel projection={projection} ccy={currentClient.currency} goals={currentBundle.goals} />}
 
       <SalesMix totals={totals} ccy={currentClient.currency} />
-
-      {portfolioRollup.some(p => !p.unassigned) && (
-        <PortfolioRollup
-          groups={portfolioRollup}
-          ccy={currentClient.currency}
-          targetRoas={currentBundle.goals.targetRoas}
-          minRoas={currentBundle.goals.minimumAcceptableRoas}
-        />
-      )}
-
-      <CampaignTable
-        campaigns={filteredCampaigns}
-        ccy={currentClient.currency}
-        search={campaignSearch}
-        onSearch={setCampaignSearch}
-        filter={campaignFilter}
-        onFilter={setCampaignFilter}
-        stateFilter={campaignStateFilter}
-        onStateFilter={setCampaignStateFilter}
-        stateCounts={stateCounts}
-        portfolios={portfolios}
-        portfolio={campaignPortfolio}
-        onPortfolio={setCampaignPortfolio}
-        sort={campaignSort}
-        onSort={setCampaignSort}
-        totalRowCount={campaigns.length}
-      />
     </div>
   )
 }
@@ -882,64 +780,6 @@ function SalesMix({ totals, ccy }: { totals: ReportingTotals; ccy: import('../ty
   )
 }
 
-function PortfolioRollup({ groups, ccy, targetRoas, minRoas }: {
-  groups: PortfolioGroup[]
-  ccy: import('../types').Currency
-  targetRoas: number
-  minRoas: number
-}) {
-  const named = groups.filter(g => !g.unassigned)
-  const roasTone = (r: number): 'mint' | 'peri' | 'blush' =>
-    r >= targetRoas ? 'mint' : r >= minRoas ? 'peri' : 'blush'
-  const cols = 'grid grid-cols-[2fr_1fr_1fr_auto_1.4fr] gap-3 items-center'
-  return (
-    <Panel>
-      <div className="flex items-end justify-between mb-3">
-        <div>
-          <h2 className="text-base font-semibold text-ink">By portfolio</h2>
-          <p className="text-xs text-ink-mute mt-0.5">Spend, sales &amp; ROAS across your Amazon portfolios</p>
-        </div>
-        <Pill tone="mute">{num(named.length)} portfolio{named.length === 1 ? '' : 's'}</Pill>
-      </div>
-      <div className="overflow-x-auto -mx-1 px-1">
-        <div className="min-w-[640px]">
-          <div className={cx(cols, 'px-2 pb-2 text-2xs uppercase tracking-wider text-ink-faint font-semibold border-b border-line')}>
-            <span>Portfolio</span>
-            <span className="text-right">Spend</span>
-            <span className="text-right">Ad sales</span>
-            <span className="text-right">ROAS</span>
-            <span>Share of spend</span>
-          </div>
-          {groups.map(g => (
-            <div key={g.name} className={cx(cols, 'px-2 py-2.5 border-b border-line/60 last:border-0')}>
-              <div className="min-w-0">
-                <div className={cx('text-sm font-medium truncate', g.unassigned ? 'text-ink-mute italic' : 'text-ink')}>{g.name}</div>
-                <div className="text-2xs text-ink-faint tnum">{num(g.count)} campaign{g.count === 1 ? '' : 's'} · {num(g.orders)} orders</div>
-              </div>
-              <div className="text-right tnum text-sm text-ink">{currency(g.spend, ccy)}</div>
-              <div className="text-right tnum text-sm text-ink">{currency(g.sales, ccy)}</div>
-              <div className="text-right">
-                {g.spend > 0
-                  ? <Pill tone={roasTone(g.roas)}>{multiplier(g.roas)}</Pill>
-                  : <span className="text-2xs text-ink-faint">—</span>}
-              </div>
-              <div className="flex items-center gap-2">
-                <div className="flex-1 h-1.5 rounded-full bg-[#f1f2f5] overflow-hidden">
-                  <div
-                    className={cx('h-full rounded-full', g.unassigned ? 'bg-ink-faint' : 'bg-accent-peri')}
-                    style={{ width: `${Math.min(100, Math.max(2, g.shareSpend))}%` }}
-                  />
-                </div>
-                <span className="tnum text-2xs text-ink-mute w-9 text-right">{percent(g.shareSpend, 0)}</span>
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
-    </Panel>
-  )
-}
-
 function Stat({ label, value, hint, tone }: { label: string; value: React.ReactNode; hint?: string; tone: 'peri' | 'mint' | 'gold' | 'lavender' | 'blush' }) {
   const stripe: Record<string, string> = {
     peri: 'bg-accent-peri', mint: 'bg-accent-mint', gold: 'bg-accent-gold', lavender: 'bg-accent-lavender', blush: 'bg-accent-blush',
@@ -950,175 +790,6 @@ function Stat({ label, value, hint, tone }: { label: string; value: React.ReactN
       <div className="text-2xs uppercase tracking-wider text-ink-mute font-semibold">{label}</div>
       <div className="mt-1.5 tnum text-lg font-semibold text-ink">{value}</div>
       {hint && <div className="mt-0.5 text-2xs text-ink-faint">{hint}</div>}
-    </div>
-  )
-}
-
-function CampaignTable({
-  campaigns, ccy, search, onSearch, filter, onFilter, stateFilter, onStateFilter, stateCounts, portfolios, portfolio, onPortfolio, sort, onSort, totalRowCount,
-}: {
-  campaigns: CampaignRow[]
-  ccy: import('../types').Currency
-  search: string; onSearch: (v: string) => void
-  filter: 'all' | 'SP' | 'SB' | 'OTHER'; onFilter: (v: 'all' | 'SP' | 'SB' | 'OTHER') => void
-  stateFilter: 'all' | 'enabled' | 'paused' | 'archived'; onStateFilter: (v: 'all' | 'enabled' | 'paused' | 'archived') => void
-  stateCounts: { all: number; enabled: number; paused: number; archived: number }
-  portfolios: { list: string[]; unassigned: number }
-  portfolio: string; onPortfolio: (v: string) => void
-  sort: 'spend' | 'sales' | 'orders' | 'roas'; onSort: (v: 'spend' | 'sales' | 'orders' | 'roas') => void
-  totalRowCount: number
-}) {
-  const top = campaigns.slice(0, 3)
-  const needsAttention = [...campaigns]
-    .filter(c => c.spend > 0)
-    .sort((a, b) => (b.spend - b.adSales) - (a.spend - a.adSales))
-    .slice(0, 3)
-
-  return (
-    <Panel className="overflow-hidden" padding="p-0">
-      <div className="px-5 pt-5 pb-3 flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <h2 className="text-base font-semibold text-ink">Campaigns</h2>
-          <p className="text-xs text-ink-mute mt-0.5">{num(totalRowCount)} active across SP, SB and Other ad products</p>
-        </div>
-        <div className="flex items-center gap-2 flex-wrap">
-          <div className="relative">
-            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-ink-faint" />
-            <input
-              value={search}
-              onChange={e => onSearch(e.target.value)}
-              placeholder="Search campaigns, ID, product..."
-              className="w-72 pl-7 pr-3 py-1.5 rounded-full border border-line bg-canvas-panel text-xs focus:outline-none focus:ring-2 focus:ring-ink/15"
-            />
-          </div>
-          <SegmentedControl<'all' | 'SP' | 'SB' | 'OTHER'>
-            value={filter}
-            onChange={onFilter}
-            options={[
-              { id: 'all', label: `All (${num(totalRowCount)})` },
-              { id: 'SP', label: `SP (${num(campaigns.filter(c => c.type === 'SP').length)})` },
-              { id: 'SB', label: `SB (${num(campaigns.filter(c => c.type === 'SB').length)})` },
-              { id: 'OTHER', label: `Other (${num(campaigns.filter(c => c.type === 'SD' || c.type === 'OTHER').length)})` },
-            ]}
-          />
-          <select
-            value={stateFilter}
-            onChange={e => onStateFilter(e.target.value as 'all' | 'enabled' | 'paused' | 'archived')}
-            className="px-3 py-1.5 rounded-full border border-line text-xs bg-canvas-panel"
-            title="Filter by campaign state"
-          >
-            <option value="all">All states ({num(stateCounts.all)})</option>
-            <option value="enabled">Enabled ({num(stateCounts.enabled)})</option>
-            <option value="paused">Paused ({num(stateCounts.paused)})</option>
-            {stateCounts.archived > 0 && <option value="archived">Archived ({num(stateCounts.archived)})</option>}
-          </select>
-          {(portfolios.list.length > 0 || portfolios.unassigned > 0) && (
-            <select
-              value={portfolio}
-              onChange={e => onPortfolio(e.target.value)}
-              className="px-3 py-1.5 rounded-full border border-line text-xs bg-canvas-panel max-w-[220px] truncate"
-              title="Filter by portfolio"
-            >
-              <option value="all">All portfolios ({portfolios.list.length + (portfolios.unassigned > 0 ? 1 : 0)})</option>
-              {portfolios.list.map(p => <option key={p} value={p}>{p}</option>)}
-              {portfolios.unassigned > 0 && <option value="__none__">No portfolio ({portfolios.unassigned})</option>}
-            </select>
-          )}
-          <select
-            value={sort}
-            onChange={e => onSort(e.target.value as typeof sort)}
-            className="px-3 py-1.5 rounded-full border border-line text-xs bg-canvas-panel"
-          >
-            <option value="spend">Sort: Spend</option>
-            <option value="sales">Sort: Sales</option>
-            <option value="orders">Sort: Orders</option>
-            <option value="roas">Sort: ROAS</option>
-          </select>
-        </div>
-      </div>
-
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-3 px-5 pb-3">
-        <SummaryStrip title="Top campaigns" rows={top} tone="mint" ccy={ccy} />
-        <SummaryStrip title="Needs attention" rows={needsAttention} tone="gold" ccy={ccy} invert />
-      </div>
-
-      <div className="overflow-x-auto border-t border-line">
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="bg-canvas-tint text-ink-mute text-2xs uppercase tracking-wider">
-              <th className="text-left px-5 py-2.5 font-medium">Campaign</th>
-              <th className="text-left px-3 py-2.5 font-medium">Type</th>
-              <th className="text-right px-3 py-2.5 font-medium">Impressions</th>
-              <th className="text-right px-3 py-2.5 font-medium">Clicks</th>
-              <th className="text-right px-3 py-2.5 font-medium">Spend</th>
-              <th className="text-right px-3 py-2.5 font-medium">Ad Sales</th>
-              <th className="text-right px-3 py-2.5 font-medium">Orders</th>
-              <th className="text-right px-3 py-2.5 font-medium">ROAS</th>
-              <th className="text-right px-3 py-2.5 font-medium">CTR</th>
-              <th className="text-right px-3 py-2.5 font-medium pr-5">CVR</th>
-            </tr>
-          </thead>
-          <tbody>
-            {campaigns.length === 0 && (
-              <tr><td colSpan={10} className="text-center py-8 text-sm text-ink-faint">No campaigns match these filters.</td></tr>
-            )}
-            {campaigns.slice(0, 200).map((c, i) => (
-              <tr key={`${c.campaignId ?? c.campaign}-${i}`} className="border-t border-line hover:bg-canvas-tint">
-                <td className="px-5 py-2.5 max-w-[420px]">
-                  <div className="font-medium text-ink truncate">{c.campaign}</div>
-                  <div className="text-2xs text-ink-faint tnum truncate">
-                    {c.campaignId}
-                    {c.portfolio && <> · <span className="text-ink-mute">{c.portfolio}</span></>}
-                  </div>
-                </td>
-                <td className="px-3 py-2.5">
-                  <Pill tone={c.type === 'SP' ? 'peri' : c.type === 'SB' ? 'mint' : c.type === 'SD' ? 'lavender' : 'mute'}>{c.type}</Pill>
-                </td>
-                <td className="px-3 py-2.5 text-right tnum">{compact(c.impressions)}</td>
-                <td className="px-3 py-2.5 text-right tnum">{compact(c.clicks)}</td>
-                <td className="px-3 py-2.5 text-right tnum">{currency(c.spend, ccy)}</td>
-                <td className="px-3 py-2.5 text-right tnum">{currency(c.adSales, ccy)}</td>
-                <td className="px-3 py-2.5 text-right tnum">{num(c.orders)}</td>
-                <td className="px-3 py-2.5 text-right tnum">
-                  <Pill tone={c.roas >= 3 ? 'mint' : c.roas >= 1.5 ? 'peri' : 'blush'}>
-                    {c.roas > 0 ? `${c.roas.toFixed(2)}×` : '—'}
-                  </Pill>
-                </td>
-                <td className="px-3 py-2.5 text-right tnum">{percent(c.ctr, 2)}</td>
-                <td className="px-3 py-2.5 text-right tnum pr-5">{percent(c.cvr, 2)}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-      {campaigns.length > 200 && (
-        <div className="px-5 py-3 text-2xs text-ink-faint border-t border-line">
-          Showing first 200 of {num(campaigns.length)} matching campaigns. Refine the search above to narrow.
-        </div>
-      )}
-    </Panel>
-  )
-}
-
-function SummaryStrip({ title, rows, tone, ccy, invert }: { title: string; rows: CampaignRow[]; tone: 'mint' | 'gold'; ccy: import('../types').Currency; invert?: boolean }) {
-  if (rows.length === 0) return null
-  return (
-    <div className={cx('rounded-lg border border-line p-3', tone === 'mint' ? 'bg-accent-mintSoft/30' : 'bg-accent-goldSoft/30')}>
-      <div className="flex items-center justify-between mb-2">
-        <span className="text-2xs uppercase tracking-wider font-semibold text-ink-mute">{title}</span>
-        <Pill tone={tone}>{rows.length}</Pill>
-      </div>
-      <div className="space-y-1.5">
-        {rows.map((c, i) => (
-          <div key={i} className="flex items-center justify-between gap-3 text-xs">
-            <span className="truncate text-ink">{c.campaign}</span>
-            <span className="tnum text-ink-mute">
-              {currency(c.spend, ccy)} · {c.roas > 0 ? `${c.roas.toFixed(2)}×` : '—'}
-              {invert && c.spend - c.adSales > 0 && <span className="text-[#9c4651] ml-1">(-{currency(c.spend - c.adSales, ccy)})</span>}
-            </span>
-          </div>
-        ))}
-      </div>
     </div>
   )
 }
