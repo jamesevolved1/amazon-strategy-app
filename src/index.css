@@ -70,6 +70,21 @@ input[type="number"] { -moz-appearance: textfield; }
 .no-scrollbar::-webkit-scrollbar { display: none; }
 .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
 
+/* ---------- Print / PDF export ---------- */
+@media print {
+  @page { size: A4 landscape; margin: 12mm; }
+  html, body, #root { height: auto !important; background: #ffffff !important; }
+  body { background: #ffffff !important; }
+  /* Flatten shadows so panels print crisply; keep their borders. */
+  .shadow-card, .shadow-pop { box-shadow: none !important; }
+  /* Keep cards from splitting across pages. */
+  .print-avoid { break-inside: avoid; }
+  /* Let the main content use the full page width. */
+  main { padding: 0 !important; }
+  /* Force-expand any horizontally-scrolling regions for print. */
+  .overflow-x-auto { overflow: visible !important; }
+}
+
 /* Range slider */
 .asa-range {
   -webkit-appearance: none;

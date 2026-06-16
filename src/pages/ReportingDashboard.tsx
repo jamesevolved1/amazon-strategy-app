@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import {
   Plane, ShoppingCart, Target as TargetIcon, TrendingUp, Package, Megaphone, Eye, MousePointerClick, Percent, BarChart3 as BarIcon, ArrowUpRight,
-  RefreshCcw, PlayCircle, CheckCircle2, AlertTriangle,
+  RefreshCcw, PlayCircle, CheckCircle2, AlertTriangle, Download,
 } from 'lucide-react'
 import { Spinner } from '../components/ui'
 import { triggerSync, useAmazonConnections } from '../lib/amazon'
@@ -28,6 +28,10 @@ export function ReportingDashboard() {
   const [preset, setPreset] = useState<RangePreset>('7d')
   const [customStart, setCustomStart] = useState('')
   const [customEnd, setCustomEnd] = useState('')
+  const [exportOpen, setExportOpen] = useState(false)
+  const [exportSections, setExportSections] = useState<ExportSections>({
+    kpis: true, chart: true, adProduct: true, projection: true, salesMix: true,
+  })
   const { connections, refresh: refreshConnections } = useAmazonConnections()
   const { connections: spapiConnections, refresh: refreshSpApi } = useSpApiConnections()
   const [syncing, setSyncing] = useState(false)
@@ -267,21 +271,29 @@ export function ReportingDashboard() {
 
   return (
     <div className="space-y-5">
-      <AccountHeader
+      {/* Print-only branded cover — only renders in the exported PDF. */}
+      <PrintCover
         client={currentClient}
-        campaignCount={campaigns.length}
-        synced={synced}
-        history={series.length ? { start: series[0].date, end: series[series.length - 1].date } : null}
-        stale={stale}
-        onSyncNow={handleSyncNow}
-        syncing={syncing}
-        connection={currentConnection}
-        canSync={Boolean(currentConnection || spapiConnection)}
+        rangeLabel={range ? `${range.start} → ${range.end} · ${range.days} days` : ''}
       />
+
+      <div className="print:hidden">
+        <AccountHeader
+          client={currentClient}
+          campaignCount={campaigns.length}
+          synced={synced}
+          history={series.length ? { start: series[0].date, end: series[series.length - 1].date } : null}
+          stale={stale}
+          onSyncNow={handleSyncNow}
+          syncing={syncing}
+          connection={currentConnection}
+          canSync={Boolean(currentConnection || spapiConnection)}
+        />
+      </div>
 
       {syncBanner && (
         <div className={cx(
-          'rounded-xl2 border px-4 py-3 flex items-start gap-3',
+          'rounded-xl2 border px-4 py-3 flex items-start gap-3 print:hidden',
           syncBanner.kind === 'ok' ? 'border-accent-mint/40 bg-accent-mintSoft/60' :
           syncBanner.kind === 'err' ? 'border-accent-blush/40 bg-accent-blushSoft/60' :
           'border-accent-gold/40 bg-accent-goldSoft/60',
@@ -296,7 +308,7 @@ export function ReportingDashboard() {
         </div>
       )}
 
-      <div className="flex items-start justify-between gap-4 flex-wrap">
+      <div className="flex items-start justify-between gap-4 flex-wrap print:hidden">
         <div>
           <div className="flex items-center gap-3 flex-wrap">
             <SegmentedControl
@@ -358,12 +370,20 @@ export function ReportingDashboard() {
             <div className="mt-2 text-xs text-ink-faint">Pick a start and end date to view a custom range.</div>
           ) : null}
         </div>
+        <ExportControl
+          open={exportOpen}
+          onOpen={setExportOpen}
+          sections={exportSections}
+          onSections={setExportSections}
+        />
       </div>
 
-      <KPIRow totals={totals} prev={prevTotals} ccy={currentClient.currency} />
+      <div className={cx(exportSections.kpis ? '' : 'print:hidden', 'print-avoid')}>
+        <KPIRow totals={totals} prev={prevTotals} ccy={currentClient.currency} />
+      </div>
 
-      <div className="grid grid-cols-1 xl:grid-cols-3 gap-5">
-        <Panel className="xl:col-span-2">
+      <div className="grid grid-cols-1 xl:grid-cols-3 gap-5 print:block print:space-y-5">
+        <Panel className={cx('xl:col-span-2 print-avoid', exportSections.chart ? '' : 'print:hidden')}>
           <div className="flex items-end justify-between mb-3">
             <div>
               <h2 className="text-base font-semibold text-ink">Daily spend vs sales</h2>
@@ -374,7 +394,7 @@ export function ReportingDashboard() {
           <ChartArea data={slice} ccy={currentClient.currency} />
         </Panel>
 
-        <Panel>
+        <Panel className={cx('print-avoid', exportSections.adProduct ? '' : 'print:hidden')}>
           <h2 className="text-base font-semibold text-ink">By ad product</h2>
           <div className="mt-3 space-y-3">
             {adSummary.length === 0 && <p className="text-sm text-ink-faint">Upload bulk campaign export to populate.</p>}
@@ -408,9 +428,102 @@ export function ReportingDashboard() {
         </Panel>
       </div>
 
-      {projection && <ProjectionPanel projection={projection} ccy={currentClient.currency} goals={currentBundle.goals} />}
+      {projection && (
+        <div className={cx('print-avoid', exportSections.projection ? '' : 'print:hidden')}>
+          <ProjectionPanel projection={projection} ccy={currentClient.currency} goals={currentBundle.goals} />
+        </div>
+      )}
 
-      <SalesMix totals={totals} ccy={currentClient.currency} />
+      <div className={cx('print-avoid', exportSections.salesMix ? '' : 'print:hidden')}>
+        <SalesMix totals={totals} ccy={currentClient.currency} />
+      </div>
+    </div>
+  )
+}
+
+type ExportSections = { kpis: boolean; chart: boolean; adProduct: boolean; projection: boolean; salesMix: boolean }
+
+const EXPORT_SECTION_LABELS: Array<{ key: keyof ExportSections; label: string }> = [
+  { key: 'kpis', label: 'KPI summary' },
+  { key: 'chart', label: 'Daily spend vs sales' },
+  { key: 'adProduct', label: 'By ad product' },
+  { key: 'projection', label: 'Month projection' },
+  { key: 'salesMix', label: 'Sales mix' },
+]
+
+// Print-only branded cover — hidden on screen, shown at the top of the PDF.
+function PrintCover({ client, rangeLabel }: { client: import('../types').Client; rangeLabel: string }) {
+  const today = new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })
+  return (
+    <div className="hidden print:block mb-6 border-b border-line pb-4">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <span className="w-9 h-9 rounded-lg bg-ink flex items-center justify-center">
+            <svg viewBox="0 0 32 32" className="w-5 h-5">
+              <path d="M9 21 L13 13 L19 18 L23 11" stroke="#9aa6f0" strokeWidth="2.4" fill="none" strokeLinecap="round" strokeLinejoin="round" />
+              <circle cx="23" cy="11" r="1.8" fill="#a7d9b9" />
+            </svg>
+          </span>
+          <div>
+            <div className="text-lg font-semibold text-ink leading-tight">{client.name}</div>
+            <div className="text-xs text-ink-mute">{client.marketplace} · {client.currency} · Performance report</div>
+          </div>
+        </div>
+        <div className="text-right text-xs text-ink-mute">
+          {rangeLabel && <div className="tnum text-ink">{rangeLabel}</div>}
+          <div>Prepared {today}</div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// "Export PDF" button + section picker. Closes itself, then opens the browser
+// print dialog (the user picks "Save as PDF"). Section toggles drive print:hidden.
+function ExportControl({ open, onOpen, sections, onSections }: {
+  open: boolean
+  onOpen: (v: boolean) => void
+  sections: ExportSections
+  onSections: (v: ExportSections) => void
+}) {
+  const count = Object.values(sections).filter(Boolean).length
+  return (
+    <div className="relative">
+      <Button variant="secondary" icon={<Download className="w-4 h-4" />} onClick={() => onOpen(!open)}>
+        Export PDF
+      </Button>
+      {open && (
+        <>
+          <div className="fixed inset-0 z-20" onClick={() => onOpen(false)} />
+          <div className="absolute right-0 mt-2 w-64 rounded-xl border border-line bg-canvas-panel shadow-pop z-30 p-3">
+            <div className="text-xs font-semibold text-ink mb-2">Include in PDF</div>
+            <div className="space-y-0.5">
+              {EXPORT_SECTION_LABELS.map(s => (
+                <label key={s.key} className="flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-canvas-tint cursor-pointer text-sm text-ink">
+                  <input
+                    type="checkbox"
+                    checked={sections[s.key]}
+                    onChange={e => onSections({ ...sections, [s.key]: e.target.checked })}
+                    className="accent-ink w-3.5 h-3.5"
+                  />
+                  {s.label}
+                </label>
+              ))}
+            </div>
+            <p className="text-2xs text-ink-faint mt-2 px-1">
+              Uses the current date range. Opens your browser's print dialog — choose “Save as PDF”.
+            </p>
+            <Button
+              className="w-full mt-2 justify-center"
+              icon={<Download className="w-4 h-4" />}
+              disabled={count === 0}
+              onClick={() => { onOpen(false); setTimeout(() => window.print(), 80) }}
+            >
+              Download PDF
+            </Button>
+          </div>
+        </>
+      )}
     </div>
   )
 }
