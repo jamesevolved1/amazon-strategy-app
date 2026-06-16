@@ -153,6 +153,7 @@ export function buildPlaybookTasks(clientId: string, base = new Date()): Optimiz
     completed: false,
     category: t.category,
     cadence: t.cadence,
+    recurring: t.cadence !== 'oneoff',
     templateKey: t.key,
     clientId,
     createdAt: now,

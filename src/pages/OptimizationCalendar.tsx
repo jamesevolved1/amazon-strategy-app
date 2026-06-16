@@ -1,7 +1,7 @@
 import React, { useMemo, useState } from 'react'
 import {
   Calendar, Check, ChevronDown, ChevronRight, Plus, Sparkles, Trash2, X, Activity, Eraser, History,
-  Rocket, StickyNote,
+  Rocket, StickyNote, Repeat,
 } from 'lucide-react'
 import { Panel, Pill, EmptyState, TextField, Button, cx, SegmentedControl } from '../components/ui'
 import { useStore } from '../lib/store'
@@ -621,7 +621,12 @@ function TaskRow({
         )}
         <div className="mt-1 flex items-center flex-wrap gap-1.5 text-2xs">
           {task.category && <Pill tone={tone}>{CATEGORY_LABEL[task.category as OptCategory] ?? task.category}</Pill>}
-          {task.cadence && task.cadence !== 'oneoff' && <Pill tone="mute">{CADENCE_LABEL[task.cadence]}</Pill>}
+          {task.cadence && task.cadence !== 'oneoff' && (
+            <Pill tone={task.recurring ? 'peri' : 'mute'}>
+              {task.recurring && <Repeat className="w-3 h-3" />}
+              {CADENCE_LABEL[task.cadence]}
+            </Pill>
+          )}
           {client && <span className="text-ink-faint tnum">· {client.name}</span>}
           <span className="text-ink-faint tnum">· due {task.due}</span>
           {showOverdue && overdue && <Pill tone="blush">overdue</Pill>}
@@ -780,12 +785,12 @@ function AddTaskInline({
           </select>
         </label>
         <label className="md:col-span-3 block">
-          <span className="block text-xs font-medium text-ink-mute mb-1.5">Cadence</span>
+          <span className="block text-xs font-medium text-ink-mute mb-1.5">Repeat</span>
           <select value={cadence} onChange={e => setCadence(e.target.value as OptCadence)} className="w-full rounded-lg border border-line bg-canvas-panel text-sm px-3 py-2">
-            {CADENCE_ORDER.map(c => <option key={c} value={c}>{CADENCE_LABEL[c]}</option>)}
+            {CADENCE_ORDER.map(c => <option key={c} value={c}>{c === 'oneoff' ? 'One-off (no repeat)' : `Repeats ${CADENCE_LABEL[c].toLowerCase()}`}</option>)}
           </select>
         </label>
-        <div className="md:col-span-6 flex items-end gap-2">
+        <div className="md:col-span-12 flex flex-wrap items-center gap-2">
           <Button
             onClick={() => {
               if (!title.trim()) return
@@ -796,6 +801,7 @@ function AddTaskInline({
                 completed: false,
                 category,
                 cadence,
+                recurring: cadence !== 'oneoff',
               })
               setTitle(''); setDetail('')
             }}
@@ -804,6 +810,12 @@ function AddTaskInline({
             Add task
           </Button>
           <Button variant="ghost" onClick={() => setOpen(false)}>Cancel</Button>
+          {cadence !== 'oneoff' && (
+            <span className="text-2xs text-ink-faint inline-flex items-center gap-1">
+              <Repeat className="w-3 h-3" />
+              Completing this task auto-creates the next one ({CADENCE_LABEL[cadence].toLowerCase()}).
+            </span>
+          )}
         </div>
       </div>
     </Panel>

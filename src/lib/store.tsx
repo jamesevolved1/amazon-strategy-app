@@ -6,6 +6,7 @@ import type {
   Client,
   ClientBundle,
   ClientGoals,
+  OptCadence,
   OptimizationTask,
   ReportKey,
   Scenario,
@@ -85,6 +86,66 @@ export function cryptoRandomId(): string {
     return crypto.randomUUID()
   }
   return `id-${Math.random().toString(36).slice(2, 10)}-${Date.now().toString(36)}`
+}
+
+function isoDay(d: Date): string {
+  const yy = d.getFullYear()
+  const mm = String(d.getMonth() + 1).padStart(2, '0')
+  const dd = String(d.getDate()).padStart(2, '0')
+  return `${yy}-${mm}-${dd}`
+}
+
+// Advance a YYYY-MM-DD due date by one cadence interval. Anchors on the later of
+// the task's due date and today, so a task completed late still schedules its
+// next occurrence in the future rather than the past.
+function advanceDue(due: string, cadence: OptCadence): string | null {
+  const today = isoDay(new Date())
+  const base = new Date((due && due >= today ? due : today) + 'T00:00:00')
+  if (Number.isNaN(base.getTime())) return null
+  switch (cadence) {
+    case 'daily': base.setDate(base.getDate() + 1); break
+    case 'weekly': base.setDate(base.getDate() + 7); break
+    case 'biweekly': base.setDate(base.getDate() + 14); break
+    case 'monthly': base.setMonth(base.getMonth() + 1); break
+    case 'quarterly': base.setMonth(base.getMonth() + 3); break
+    default: return null // 'oneoff' or unknown — does not recur
+  }
+  return isoDay(base)
+}
+
+// When a recurring task is completed, produce the next occurrence (or null if it
+// shouldn't recur / already has). The caller marks the source task as spawned.
+function nextOccurrence(task: OptimizationTask): OptimizationTask | null {
+  if (!task.recurring || !task.cadence || task.cadence === 'oneoff' || task.recurrenceSpawned) return null
+  const due = advanceDue(task.due, task.cadence)
+  if (!due) return null
+  return {
+    ...task,
+    id: cryptoRandomId(),
+    due,
+    completed: false,
+    completedAt: undefined,
+    notes: undefined,
+    recurrenceSpawned: undefined,
+    createdAt: new Date().toISOString(),
+  }
+}
+
+// Flip a task's completion and, if it just completed and recurs, append its next
+// occurrence. Shared by the single-client and cross-client toggle helpers.
+function toggleWithRecurrence(tasks: OptimizationTask[], id: string): OptimizationTask[] {
+  let spawned: OptimizationTask | null = null
+  const next = tasks.map(t => {
+    if (t.id !== id) return t
+    const completed = !t.completed
+    const updated: OptimizationTask = { ...t, completed, completedAt: completed ? new Date().toISOString() : undefined }
+    if (completed) {
+      const occ = nextOccurrence(t)
+      if (occ) { spawned = occ; updated.recurrenceSpawned = true }
+    }
+    return updated
+  })
+  return spawned ? [spawned, ...next] : next
 }
 
 interface StoreCtx {
@@ -291,14 +352,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
   }, [updateBundle])
 
   const toggleTask: StoreCtx['toggleTask'] = useCallback((id) => {
-    updateBundle(b => ({
-      ...b,
-      optimization: b.optimization.map(t => {
-        if (t.id !== id) return t
-        const completed = !t.completed
-        return { ...t, completed, completedAt: completed ? new Date().toISOString() : undefined }
-      }),
-    }))
+    updateBundle(b => ({ ...b, optimization: toggleWithRecurrence(b.optimization, id) }))
   }, [updateBundle])
 
   const deleteTask: StoreCtx['deleteTask'] = useCallback((id) => {
@@ -333,14 +387,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
   }, [updateBundleFor])
 
   const toggleTaskFor: StoreCtx['toggleTaskFor'] = useCallback((clientId, id) => {
-    updateBundleFor(clientId, b => ({
-      ...b,
-      optimization: b.optimization.map(t => {
-        if (t.id !== id) return t
-        const completed = !t.completed
-        return { ...t, completed, completedAt: completed ? new Date().toISOString() : undefined }
-      }),
-    }))
+    updateBundleFor(clientId, b => ({ ...b, optimization: toggleWithRecurrence(b.optimization, id) }))
   }, [updateBundleFor])
 
   const deleteTaskFor: StoreCtx['deleteTaskFor'] = useCallback((clientId, id) => {

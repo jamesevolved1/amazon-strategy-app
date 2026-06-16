@@ -157,6 +157,8 @@ export interface OptimizationTask {
   completedAt?: string  // ISO
   category?: OptCategory | string
   cadence?: OptCadence
+  recurring?: boolean         // when completed, auto-spawn the next occurrence at due + cadence
+  recurrenceSpawned?: boolean // internal guard: next occurrence already created
   templateKey?: string  // links back to a Sophie Society playbook template
   clientId: string
   createdAt: string
