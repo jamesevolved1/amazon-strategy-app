@@ -61,7 +61,7 @@ interface ConnectionRow {
   access_token_expires_at: string | null
   amazon_profile_ids: number[] | null
   pending_reports: PendingReport[]
-  synced_data: { campaigns: any[]; daily?: any[]; portfolioCheckedAt?: string } | null
+  synced_data: { campaigns: any[]; daily?: any[]; portfolioCheckedAt?: string; portfolioDebug?: any } | null
   last_synced_at: string | null
 }
 
@@ -209,14 +209,23 @@ async function syncOne(
   const hasCampaigns = (synced.campaigns?.length ?? 0) > 0
   if (hasCampaigns && profileIds.length > 0 && (ingestedRows.length > 0 || mapIsStale)) {
     try {
-      const portfolioMap = await buildPortfolioMap(profileIds, accessToken, adsClientId)
+      const { map: portfolioMap, debug } = await buildPortfolioMap(profileIds, accessToken, adsClientId)
       if (portfolioMap.size > 0) {
         synced.campaigns = synced.campaigns.map((c: any) => {
           const name = c.campaignId ? portfolioMap.get(String(c.campaignId)) : undefined
           return name ? { ...c, portfolio: name } : c
         })
+        // Only cache the check time on a SUCCESSFUL map — so an empty/failed
+        // lookup keeps retrying on the next sync instead of going quiet for 12h.
+        synced.portfolioCheckedAt = new Date().toISOString()
       }
-      synced.portfolioCheckedAt = new Date().toISOString()
+      // Diagnostic: record what each Amazon call returned + a couple of sample
+      // ids so we can spot id-format mismatches. Harmless; the frontend ignores
+      // unknown fields. (Temporary while we verify portfolio mapping.)
+      synced.portfolioDebug = {
+        ...debug,
+        sampleSyncedCampaignIds: (synced.campaigns ?? []).slice(0, 3).map((c: any) => String(c.campaignId)),
+      }
       enriched = true
     } catch (e) {
       console.error("portfolio enrich failed", e instanceof Error ? e.message : String(e))
@@ -329,8 +338,9 @@ async function buildPortfolioMap(
   profileIds: number[],
   accessToken: string,
   clientId: string,
-): Promise<Map<string, string>> {
+): Promise<{ map: Map<string, string>; debug: any }> {
   const campaignToPortfolio = new Map<string, string>()
+  const debugProfiles: any[] = []
 
   for (const profileId of profileIds) {
     const authBase = {
@@ -338,6 +348,7 @@ async function buildPortfolioMap(
       "Amazon-Advertising-API-ClientId": clientId,
       "Amazon-Advertising-API-Scope": String(profileId),
     }
+    const dbg: any = { profileId }
 
     // 1. portfolioId -> name (shared by all three ad products)
     let portfolioName = new Map<string, string>()
@@ -345,24 +356,33 @@ async function buildPortfolioMap(
       const portResp = await fetch(`${AMAZON_ADS_API}/v2/portfolios`, {
         headers: { ...authBase, "Accept": "application/json" },
       })
+      dbg.portfoliosStatus = portResp.status
       if (portResp.ok) {
         const portfolios = await portResp.json() as Array<{ portfolioId: number | string; name: string }>
         if (Array.isArray(portfolios)) {
           portfolioName = new Map(portfolios.map(p => [String(p.portfolioId), p.name]))
         }
+      } else {
+        dbg.portfoliosBody = (await portResp.text()).slice(0, 200)
       }
     } catch (e) {
-      console.error("portfolios fetch", profileId, e instanceof Error ? e.message : String(e))
+      dbg.portfoliosError = e instanceof Error ? e.message : String(e)
     }
-    if (portfolioName.size === 0) continue // no portfolios on this profile
+    dbg.portfoliosCount = portfolioName.size
+    if (portfolioName.size === 0) { debugProfiles.push(dbg); continue }
 
+    let withPid = 0
+    let sampleListId: string | undefined
     const record = (campaignId: unknown, portfolioId: unknown) => {
+      if (sampleListId === undefined && campaignId != null) sampleListId = String(campaignId)
       const pid = portfolioId != null ? String(portfolioId) : ""
+      if (pid) withPid++
       const name = pid ? portfolioName.get(pid) : undefined
       if (name && campaignId != null) campaignToPortfolio.set(String(campaignId), name)
     }
 
     // 2. Sponsored Products campaigns (v3, paginated POST)
+    let spCount = 0
     try {
       let nextToken: string | undefined = undefined
       let pages = 0
@@ -381,20 +401,23 @@ async function buildPortfolioMap(
           },
           body: JSON.stringify(body),
         })
-        if (!resp.ok) break
+        dbg.spStatus = resp.status
+        if (!resp.ok) { dbg.spBody = (await resp.text()).slice(0, 200); break }
         const data = await resp.json() as {
           campaigns?: Array<{ campaignId: string | number; portfolioId?: string | number }>
           nextToken?: string
         }
-        for (const c of data.campaigns ?? []) record(c.campaignId, c.portfolioId)
+        for (const c of data.campaigns ?? []) { record(c.campaignId, c.portfolioId); spCount++ }
         nextToken = data.nextToken
         pages++
       } while (nextToken && pages < 6)
     } catch (e) {
-      console.error("sp campaigns", profileId, e instanceof Error ? e.message : String(e))
+      dbg.spError = e instanceof Error ? e.message : String(e)
     }
+    dbg.spCount = spCount
 
     // 3. Sponsored Brands campaigns (v4, paginated POST)
+    let sbCount = 0
     try {
       let nextToken: string | undefined = undefined
       let pages = 0
@@ -410,37 +433,50 @@ async function buildPortfolioMap(
           },
           body: JSON.stringify(body),
         })
-        if (!resp.ok) break
+        dbg.sbStatus = resp.status
+        if (!resp.ok) { dbg.sbBody = (await resp.text()).slice(0, 200); break }
         const data = await resp.json() as {
           campaigns?: Array<{ campaignId: string | number; portfolioId?: string | number }>
           nextToken?: string
         }
-        for (const c of data.campaigns ?? []) record(c.campaignId, c.portfolioId)
+        for (const c of data.campaigns ?? []) { record(c.campaignId, c.portfolioId); sbCount++ }
         nextToken = data.nextToken
         pages++
       } while (nextToken && pages < 6)
     } catch (e) {
-      console.error("sb campaigns", profileId, e instanceof Error ? e.message : String(e))
+      dbg.sbError = e instanceof Error ? e.message : String(e)
     }
+    dbg.sbCount = sbCount
 
     // 4. Sponsored Display campaigns (v3 GET, plain array response)
+    let sdCount = 0
     try {
       const resp = await fetch(
         `${AMAZON_ADS_API}/sd/campaigns?stateFilter=enabled,paused,archived&count=500`,
         { headers: { ...authBase, "Accept": "application/json" } },
       )
+      dbg.sdStatus = resp.status
       if (resp.ok) {
         const data = await resp.json() as Array<{ campaignId: string | number; portfolioId?: string | number }>
         if (Array.isArray(data)) {
-          for (const c of data) record(c.campaignId, c.portfolioId)
+          for (const c of data) { record(c.campaignId, c.portfolioId); sdCount++ }
         }
+      } else {
+        dbg.sdBody = (await resp.text()).slice(0, 200)
       }
     } catch (e) {
-      console.error("sd campaigns", profileId, e instanceof Error ? e.message : String(e))
+      dbg.sdError = e instanceof Error ? e.message : String(e)
     }
+    dbg.sdCount = sdCount
+    dbg.campaignsWithPortfolioId = withPid
+    dbg.sampleListCampaignId = sampleListId
+    debugProfiles.push(dbg)
   }
 
-  return campaignToPortfolio
+  return {
+    map: campaignToPortfolio,
+    debug: { profiles: debugProfiles, mapSize: campaignToPortfolio.size },
+  }
 }
 
 // ---------- Report request ----------
