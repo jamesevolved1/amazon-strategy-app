@@ -84,11 +84,14 @@ export function SpApiConnectButton({
         <Pill tone="mint"><CheckCircle2 className="w-3 h-3" />Seller Central</Pill>
       )}
       <span className="text-2xs text-ink-faint tnum">{label}</span>
-      {hasError && (
-        <Button onClick={startConnect} variant="secondary" disabled={busy} icon={<Store className="w-3.5 h-3.5" />}>
-          Re-authorize
-        </Button>
-      )}
+      <Button
+        onClick={startConnect}
+        variant={hasError ? 'secondary' : 'ghost'}
+        disabled={busy}
+        icon={<Store className="w-3.5 h-3.5" />}
+      >
+        Re-authorize
+      </Button>
       <button onClick={startDisconnect} disabled={busy} className="text-ink-faint hover:text-[#9c4651] p-1.5 rounded-md disabled:opacity-50" title="Disconnect" aria-label="Disconnect Seller Central">
         <Link2Off className="w-3.5 h-3.5" />
       </button>
