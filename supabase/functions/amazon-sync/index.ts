@@ -50,6 +50,8 @@ interface PendingReport {
   startDate: string
   endDate: string
   error?: string
+  batchId?: string  // all reports requested together share one id; a new batch
+                    // = a fresh 30-day pull, so we REPLACE rather than accumulate
 }
 
 interface ConnectionRow {
@@ -180,7 +182,7 @@ async function syncOne(
         const rows = await downloadReport(statusResp.url)
         // Tag each row with profile + ad product for downstream mapping
         for (const r of rows) {
-          ingestedRows.push({ ...r, _profileId: p.profileId, _adProduct: p.adProduct })
+          ingestedRows.push({ ...r, _profileId: p.profileId, _adProduct: p.adProduct, _batchId: p.batchId })
         }
         downloads++
       } catch (e: unknown) {
@@ -202,7 +204,17 @@ async function syncOne(
   let sideDataChangedMkt = false
   let synced = conn.synced_data ?? { campaigns: [], daily: [] }
   if (ingestedRows.length > 0) {
+    const batchId = ingestedRows[0]._batchId as string | undefined
+    // A new report batch = a fresh 30-day pull. Clear the previous window's
+    // totals before merging so we REPLACE rather than accumulate (the old
+    // behavior re-added the same 30 days every cycle, inflating without bound).
+    // Within a batch (reports trickle in over a few runs), the id matches, so
+    // SP/SB/SD across profiles still combine correctly.
+    if (batchId && (synced as any).batchId !== batchId) {
+      synced = { ...synced, campaigns: [], daily: [], dailyByMkt: [] }
+    }
     synced = mergeReportRows(synced, ingestedRows, profileMap)
+    if (batchId) (synced as any).batchId = batchId
   }
   // Always keep the profile→marketplace map fresh on the synced blob (cheap,
   // and the frontend marketplace selector reads it).
@@ -547,6 +559,7 @@ async function requestFreshReports(
 
   const pending: PendingReport[] = []
   const errors: string[] = []
+  const batchId = crypto.randomUUID()
 
   for (const profileId of profileIds) {
     for (const product of AD_PRODUCTS) {
@@ -560,6 +573,7 @@ async function requestFreshReports(
           requestedAt: new Date().toISOString(),
           startDate: startIso,
           endDate: endIso,
+          batchId,
         })
       } catch (e: unknown) {
         const m = e instanceof Error ? e.message : String(e)
@@ -677,6 +691,7 @@ interface AmazonReportRow {
   roasClicks7d?: number
   _profileId?: number
   _adProduct?: 'SP' | 'SB' | 'SD'
+  _batchId?: string
 }
 
 async function downloadReport(downloadUrl: string): Promise<AmazonReportRow[]> {
