@@ -105,13 +105,16 @@ Deno.serve(async (req) => {
 
 async function processAds(sb: any, conn: any, clientId: string, clientSecret: string) {
   const token = await refreshAds(sb, "amazon_connections", conn, clientId, clientSecret)
-  let profileIds: number[] = conn.amazon_profile_ids ?? []
-  if (profileIds.length === 0) {
+  // Fetch profile metadata (country + currency) so data splits by marketplace.
+  let profileMeta: any[] = []
+  try {
     const resp = await fetch(`${ADS_API}/v2/profiles`, {
       headers: { Authorization: `Bearer ${token}`, "Amazon-Advertising-API-ClientId": clientId, Accept: "application/json" },
     })
-    if (resp.ok) profileIds = ((await resp.json()) as any[]).map(p => p.profileId)
-  }
+    if (resp.ok) profileMeta = ((await resp.json()) as any[]).map(p => ({ profileId: p.profileId, marketplace: p.countryCode ?? "US", currency: p.currencyCode ?? "USD", marketplaceId: p.accountInfo?.marketplaceStringId ?? "" }))
+  } catch { /* ignore */ }
+  const profileIds: number[] = profileMeta.length > 0 ? profileMeta.map(p => p.profileId) : (conn.amazon_profile_ids ?? [])
+  const profileMap = new Map<number, any>(profileMeta.map(p => [p.profileId, p]))
 
   const pending: any[] = Array.isArray(conn.pending_reports) ? [...conn.pending_reports] : []
   let synced = conn.synced_data ?? { campaigns: [], daily: [] }
@@ -132,7 +135,9 @@ async function processAds(sb: any, conn: any, clientId: string, clientSecret: st
     else stillPending.push({ ...p, status: s.status })
   }
 
-  if (ingestedRows.length > 0) synced = mergeAds(synced, ingestedRows)
+  if (ingestedRows.length > 0) synced = mergeAds(synced, ingestedRows, profileMap)
+  let mktChanged = false
+  if (profileMeta.length > 0) { synced.profiles = profileMeta; mktChanged = true }
 
   // Back-fill campaign→portfolio labels. Reports can't carry portfolioId, so we
   // fetch it separately (SP/SB/SD). Runs on fresh data OR when existing
@@ -169,7 +174,7 @@ async function processAds(sb: any, conn: any, clientId: string, clientSecret: st
     pending_reports: [...stillPending, ...newPending],
     last_synced_at: new Date().toISOString(), last_sync_error: null,
   }
-  if (ingestedRows.length > 0 || enriched) updates.synced_data = synced
+  if (ingestedRows.length > 0 || enriched || mktChanged) updates.synced_data = synced
   if (ingestedRows.length > 0) updates.synced_data_at = new Date().toISOString()
   await sb.from("amazon_connections").update(updates).eq("id", conn.id)
   return { ingested: downloads }
@@ -222,28 +227,42 @@ async function adsReportStatus(reportId: string, profileId: number, token: strin
   return await resp.json()
 }
 
-function mergeAds(existing: any, rows: any[]) {
+function mergeAds(existing: any, rows: any[], profileMap: Map<number, any>) {
   const cmap = new Map<string, any>()
   for (const c of existing.campaigns ?? []) cmap.set(`${c.type}:${c.campaignId}`, { ...c })
   const dmap = new Map<string, any>()
   for (const d of existing.daily ?? []) dmap.set(d.date, { ...d })
+  const dmkt = new Map<string, any>()
+  for (const d of existing.dailyByMkt ?? []) dmkt.set(`${d.marketplace}:${d.date}`, { ...d })
   for (const r of rows) {
     const product = r._adProduct ?? "SP"
     const cid = String(r.campaignId ?? "")
     if (!cid) continue
     const sales = r.sales7d ?? r.sales ?? 0, orders = r.purchases7d ?? r.purchases ?? 0
+    const meta = r._profileId != null ? profileMap.get(r._profileId) : undefined
+    const mkt = meta?.marketplace ?? "US"
     const k = `${product}:${cid}`
     const c = cmap.get(k) ?? { campaign: r.campaignName ?? cid, campaignId: cid, type: product, impressions: 0, clicks: 0, spend: 0, adSales: 0, orders: 0 }
+    if (meta) { c.profileId = r._profileId; c.marketplace = mkt; c.currency = meta.currency }
     const st = String(r.campaignStatus ?? "").toLowerCase()
     if (st === "enabled" || st === "paused" || st === "archived") c.state = st
     c.impressions += r.impressions ?? 0; c.clicks += r.clicks ?? 0; c.spend += r.cost ?? 0; c.adSales += sales; c.orders += orders
     cmap.set(k, c)
     if (r.date) {
+      const mk = `${mkt}:${r.date}`
+      const dm = dmkt.get(mk) ?? { marketplace: mkt, date: r.date, spend: 0, adSales: 0, orders: 0, impressions: 0, clicks: 0 }
+      dm.spend += r.cost ?? 0; dm.adSales += sales; dm.orders += orders; dm.impressions += r.impressions ?? 0; dm.clicks += r.clicks ?? 0
+      dmkt.set(mk, dm)
       const d = dmap.get(r.date) ?? { date: r.date, spend: 0, adSales: 0, orders: 0, impressions: 0, clicks: 0 }
       d.spend += r.cost ?? 0; d.adSales += sales; d.orders += orders; d.impressions += r.impressions ?? 0; d.clicks += r.clicks ?? 0
       dmap.set(r.date, d)
     }
   }
+  const ratios = (x: any) => ({
+    ...x,
+    ctr: x.impressions ? (x.clicks / x.impressions) * 100 : 0,
+    cvr: x.clicks ? (x.orders / x.clicks) * 100 : 0,
+  })
   const campaigns = Array.from(cmap.values()).map(c => ({
     ...c,
     ctr: c.impressions ? (c.clicks / c.impressions) * 100 : 0,
@@ -252,8 +271,9 @@ function mergeAds(existing: any, rows: any[]) {
     acos: c.adSales > 0 ? (c.spend / c.adSales) * 100 : 0,
     cpc: c.clicks > 0 ? c.spend / c.clicks : 0,
   }))
-  const daily = Array.from(dmap.values()).map(d => ({ ...d, ctr: d.impressions ? (d.clicks / d.impressions) * 100 : 0, cvr: d.clicks ? (d.orders / d.clicks) * 100 : 0 })).sort((a, b) => a.date.localeCompare(b.date))
-  return { campaigns, daily }
+  const daily = Array.from(dmap.values()).map(ratios).sort((a, b) => a.date.localeCompare(b.date))
+  const dailyByMkt = Array.from(dmkt.values()).map(ratios).sort((a, b) => a.date.localeCompare(b.date))
+  return { campaigns, daily, dailyByMkt }
 }
 
 // Build campaignId -> portfolio name across SP (v3), SB (v4), SD (v3). Reports
