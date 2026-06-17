@@ -222,7 +222,7 @@ async function requestAdsReports(profileIds: number[], token: string, clientId: 
 
 function adsColumns(p: string): string[] {
   const base = ["date", "campaignId", "campaignName", "campaignStatus", "impressions", "clicks", "cost"]
-  if (p === "SP") return [...base, "sales7d", "purchases7d"]
+  if (p === "SP") return [...base, "sales14d", "purchases14d"]  // 14-day attribution (Amazon console default)
   return [...base, "sales", "purchases"]
 }
 
@@ -245,7 +245,7 @@ function mergeAds(existing: any, rows: any[], profileMap: Map<number, any>) {
     const product = r._adProduct ?? "SP"
     const cid = String(r.campaignId ?? "")
     if (!cid) continue
-    const sales = r.sales7d ?? r.sales ?? 0, orders = r.purchases7d ?? r.purchases ?? 0
+    const sales = r.sales14d ?? r.sales7d ?? r.sales ?? 0, orders = r.purchases14d ?? r.purchases7d ?? r.purchases ?? 0
     const meta = r._profileId != null ? profileMap.get(r._profileId) : undefined
     const mkt = meta?.marketplace ?? "US"
     const k = `${product}:${cid}`

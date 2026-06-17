@@ -637,10 +637,10 @@ function columnsFor(adProduct: 'SP' | 'SB' | 'SD'): string[] {
     "impressions", "clicks", "cost",
   ]
   if (adProduct === 'SP') {
-    // SP uses the 7-day attribution windows.
-    return [...base, "sales7d", "purchases7d"]
+    // 14-day attribution to match the Amazon Ads console default.
+    return [...base, "sales14d", "purchases14d"]
   }
-  // SB and SD use the plain sales / purchases columns.
+  // SB and SD use the plain sales / purchases columns (already 14-day).
   return [...base, "sales", "purchases"]
 }
 
@@ -683,8 +683,10 @@ interface AmazonReportRow {
   clicks?: number
   cost?: number
   sales7d?: number
+  sales14d?: number
   sales?: number
   purchases7d?: number
+  purchases14d?: number
   purchases?: number
   clickThroughRate?: number
   costPerClick?: number
@@ -792,8 +794,8 @@ function mergeReportRows(
     const cid = String(r.campaignId ?? '')
     if (!cid) continue
     const key = `${product}:${cid}`
-    const sales = r.sales7d ?? r.sales ?? 0
-    const orders = r.purchases7d ?? r.purchases ?? 0
+    const sales = r.sales14d ?? r.sales7d ?? r.sales ?? 0
+    const orders = r.purchases14d ?? r.purchases7d ?? r.purchases ?? 0
     const meta = r._profileId != null ? profileMap.get(r._profileId) : undefined
     const mkt = meta?.marketplace ?? 'US'
     const existing = campaignMap.get(key) ?? {
