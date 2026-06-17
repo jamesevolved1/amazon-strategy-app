@@ -58,6 +58,14 @@ export function currencyExact(n: unknown, ccy: Currency = 'USD'): string {
   return `${sym}${fmt({ maximumFractionDigits: 2, minimumFractionDigits: 2 }).format(n as number)}`
 }
 
+// Full number with thousands separators and NO cents (e.g. $1,432). Never
+// abbreviates — use for headline KPI figures where the exact whole figure matters.
+export function currencyWhole(n: unknown, ccy: Currency = 'USD'): string {
+  if (!isFinite(n)) return '—'
+  const sym = CURRENCY_SYMBOL[ccy] ?? '$'
+  return `${sym}${fmt({ maximumFractionDigits: 0, minimumFractionDigits: 0 }).format(n as number)}`
+}
+
 export function percent(n: unknown, decimals = 1): string {
   if (!isFinite(n)) return '—'
   return `${fmt({ maximumFractionDigits: decimals, minimumFractionDigits: decimals }).format(n as number)}%`

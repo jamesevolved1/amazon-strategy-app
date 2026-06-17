@@ -255,6 +255,7 @@ export interface ReportingTotals {
   tacos: number     // %
   roas: number      // x
   orders: number
+  totalOrders: number  // total order items (Business Report) — all sources
   totalSales: number
   organicSales: number
   impressions: number
@@ -280,7 +281,7 @@ export interface ReportingComparison {
 
 export function emptyTotals(): ReportingTotals {
   return {
-    spend: 0, adSales: 0, tacos: 0, roas: 0, orders: 0,
+    spend: 0, adSales: 0, tacos: 0, roas: 0, orders: 0, totalOrders: 0,
     totalSales: 0, organicSales: 0, impressions: 0, clicks: 0,
     ctr: 0, cvr: 0, cpc: 0, perDaySpend: 0, perDaySales: 0, days: 0,
   }
@@ -290,13 +291,14 @@ export function totalsFromSeries(series: DailySeriesPoint[], days?: number): Rep
   const spend = sum(series.map(s => s.spend))
   const adSales = sum(series.map(s => s.adSales))
   const orders = sum(series.map(s => s.orders))
+  const totalOrders = sum(series.map(s => s.totalOrders ?? 0))
   const impressions = sum(series.map(s => s.impressions))
   const clicks = sum(series.map(s => s.clicks))
   const totalSales = sum(series.map(s => s.totalSales ?? 0))
   const organicSales = Math.max(0, totalSales - adSales)
   const d = days ?? series.length
   return {
-    spend, adSales, orders, impressions, clicks,
+    spend, adSales, orders, totalOrders, impressions, clicks,
     totalSales, organicSales,
     tacos: totalSales > 0 ? (spend / totalSales) * 100 : 0,
     roas: spend > 0 ? adSales / spend : 0,

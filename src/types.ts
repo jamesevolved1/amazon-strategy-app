@@ -135,7 +135,8 @@ export interface DailySeriesPoint {
   date: string      // YYYY-MM-DD
   spend: number
   adSales: number
-  orders: number
+  orders: number          // ad-attributed orders (purchases) — drives ad CVR
+  totalOrders?: number    // total order items from the Business Report (all sources)
   impressions: number
   clicks: number
   totalSales?: number

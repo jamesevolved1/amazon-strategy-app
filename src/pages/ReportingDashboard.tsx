@@ -12,7 +12,7 @@ import {
 import { useStore } from '../lib/store'
 import { Panel, Pill, SegmentedControl, EmptyState, Button, cx, Delta } from '../components/ui'
 import { KPICard } from '../components/KPICard'
-import { compact, currency, dateRangeLabel, daysBetween, deltaPct, num, percent, relativeTime, timestamp } from '../lib/format'
+import { compact, currency, currencyWhole, dateRangeLabel, daysBetween, deltaPct, num, percent, relativeTime, timestamp } from '../lib/format'
 import {
   adProductSummary, totalsFromSeries, projectCurrentMonth,
   type ReportingTotals, type MonthProjection,
@@ -217,6 +217,9 @@ export function ReportingDashboard() {
       for (const p of spapiDaily) {
         const existing = map.get(p.date) ?? { date: p.date, spend: 0, adSales: 0, orders: 0, impressions: 0, clicks: 0 }
         existing.totalSales = p.totalSales
+        // SP-API `orders` is totalOrderItems (Business Report) — the real,
+        // all-sources order count. Keep ad `orders` intact for ad CVR.
+        existing.totalOrders = p.orders
         map.set(p.date, existing)
       }
     }
@@ -646,18 +649,18 @@ function KPIRow({ totals, prev, ccy }: { totals: ReportingTotals; prev: Reportin
         label="Ad Spend"
         tone="peri"
         icon={<Plane className="w-3.5 h-3.5" />}
-        value={currency(totals.spend, ccy, true)}
+        value={currencyWhole(totals.spend, ccy)}
         delta={deltaPct(totals.spend, prev.spend)}
         deltaInvert
-        secondary={`${currency(totals.perDaySpend, ccy)}/day`}
+        secondary={`${currencyWhole(totals.perDaySpend, ccy)}/day`}
       />
       <KPICard
         label="Attributed Sales"
         tone="mint"
         icon={<ShoppingCart className="w-3.5 h-3.5" />}
-        value={currency(totals.adSales, ccy, true)}
+        value={currencyWhole(totals.adSales, ccy)}
         delta={deltaPct(totals.adSales, prev.adSales)}
-        secondary={`${currency(totals.perDaySales * (totals.adSales / Math.max(totals.totalSales, 1)), ccy)}/day`}
+        secondary={`${currencyWhole(totals.perDaySales * (totals.adSales / Math.max(totals.totalSales, 1)), ccy)}/day`}
       />
       <KPICard
         label="Account TACOS"
@@ -680,17 +683,17 @@ function KPIRow({ totals, prev, ccy }: { totals: ReportingTotals; prev: Reportin
         label="Orders"
         tone="blush"
         icon={<Package className="w-3.5 h-3.5" />}
-        value={num(totals.orders)}
-        delta={deltaPct(totals.orders, prev.orders)}
+        value={num(totals.totalOrders || totals.orders)}
+        delta={deltaPct(totals.totalOrders || totals.orders, prev.totalOrders || prev.orders)}
         secondary={`${percent(totals.cvr, 2)} CVR`}
       />
       <KPICard
         label="Total Sales"
         tone="mint"
         icon={<ArrowUpRight className="w-3.5 h-3.5" />}
-        value={currency(totals.totalSales, ccy, true)}
+        value={currencyWhole(totals.totalSales, ccy)}
         delta={deltaPct(totals.totalSales, prev.totalSales)}
-        secondary={`Organic ${currency(totals.organicSales, ccy, true)}`}
+        secondary={`Organic ${currencyWhole(totals.organicSales, ccy)}`}
       />
       <KPICard
         label="Impressions"
@@ -734,7 +737,7 @@ function KPIRow({ totals, prev, ccy }: { totals: ReportingTotals; prev: Reportin
         icon={<Percent className="w-3.5 h-3.5" />}
         value={percent(totals.cvr, 2)}
         delta={deltaPct(totals.cvr, prev.cvr)}
-        secondary={`AOV ${currency(totals.orders ? totals.adSales / totals.orders : 0, ccy)}`}
+        secondary={`AOV ${currency(totals.totalOrders ? totals.totalSales / totals.totalOrders : (totals.orders ? totals.adSales / totals.orders : 0), ccy)}`}
       />
     </div>
   )
@@ -934,10 +937,10 @@ function SalesMix({ totals, ccy }: { totals: ReportingTotals; ccy: import('../ty
         </Pill>
       </div>
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-        <Stat label="Ad-attributed" value={currency(totals.adSales, ccy)} hint={`${percent(adShare, 1)} of total`} tone="peri" />
-        <Stat label="Organic" value={currency(totals.organicSales, ccy)} hint={`${percent(organicShare, 1)} of total`} tone="mint" />
-        <Stat label="Total sales" value={currency(totals.totalSales, ccy)} hint={`${num(totals.days)} days`} tone="lavender" />
-        <Stat label="Orders" value={num(totals.orders)} hint={`AOV ${currency(totals.orders ? totals.adSales / totals.orders : 0, ccy)}`} tone="gold" />
+        <Stat label="Ad-attributed" value={currencyWhole(totals.adSales, ccy)} hint={`${percent(adShare, 1)} of total`} tone="peri" />
+        <Stat label="Organic" value={currencyWhole(totals.organicSales, ccy)} hint={`${percent(organicShare, 1)} of total`} tone="mint" />
+        <Stat label="Total sales" value={currencyWhole(totals.totalSales, ccy)} hint={`${num(totals.days)} days`} tone="lavender" />
+        <Stat label="Orders" value={num(totals.totalOrders || totals.orders)} hint={`AOV ${currency(totals.totalOrders ? totals.totalSales / totals.totalOrders : (totals.orders ? totals.adSales / totals.orders : 0), ccy)}`} tone="gold" />
       </div>
       <div className="mt-4 h-2 rounded-full bg-accent-mintSoft overflow-hidden">
         <div className="h-full bg-accent-peri" style={{ width: `${Math.min(100, Math.max(2, adShare))}%` }} />
