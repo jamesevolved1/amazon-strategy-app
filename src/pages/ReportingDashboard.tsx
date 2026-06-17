@@ -146,6 +146,34 @@ export function ReportingDashboard() {
   const syncedDaily = currentConnection?.synced_data?.daily ?? null
   // SP-API total-sales by day (the missing piece for TACOS / organic / total)
   const spapiDaily = spapiConnection?.synced_data?.daily ?? null
+  // Per-marketplace ad daily + profile→currency map (a seller across US/CA/MX
+  // must be viewed one marketplace at a time, each in its own currency).
+  const dailyByMkt = ((currentConnection?.synced_data as any)?.dailyByMkt ?? null) as Array<DailySeriesPoint & { marketplace: string }> | null
+  const mktProfiles = ((currentConnection?.synced_data as any)?.profiles ?? null) as Array<{ marketplace: string; currency: string }> | null
+
+  const marketplaces = useMemo(() => {
+    const m = new Map<string, string>()
+    for (const p of mktProfiles ?? []) if (p?.marketplace) m.set(p.marketplace, p.currency || 'USD')
+    return Array.from(m, ([marketplace, currency]) => ({ marketplace, currency }))
+  }, [mktProfiles])
+
+  const [marketplace, setMarketplace] = useState<string | null>(null)
+  useEffect(() => {
+    if (marketplaces.length === 0) { if (marketplace !== null) setMarketplace(null); return }
+    if (marketplace == null || !marketplaces.some(m => m.marketplace === marketplace)) {
+      const us = marketplaces.find(m => m.marketplace === 'US')
+      setMarketplace(us ? 'US' : marketplaces[0].marketplace)
+    }
+  }, [marketplaces, marketplace])
+
+  // The marketplace whose data we're showing (null = single-marketplace account → aggregate).
+  const activeMkt = marketplaces.length > 1
+    ? (marketplace ?? marketplaces.find(m => m.marketplace === 'US')?.marketplace ?? marketplaces[0].marketplace)
+    : null
+  const ccy = (marketplaces.find(m => m.marketplace === activeMkt)?.currency ?? currentClient.currency) as import('../types').Currency
+  // SP-API total sales is pulled for the US marketplace only (for now), so total
+  // sales / TACOS / organic are meaningful only on the US view or single-market accounts.
+  const totalSalesApplies = !activeMkt || activeMkt === 'US'
 
   // Build a merged daily series from bulk daily + business report daily + synced API daily.
   const series: DailySeriesPoint[] = useMemo(() => {
@@ -164,9 +192,12 @@ export function ReportingDashboard() {
     }
     ingest(bulk?.daily)
     ingest(biz?.daily)
-    // Synced Ads API data takes priority for the ad metrics.
-    if (syncedDaily) {
-      for (const p of syncedDaily) {
+    // Synced Ads API data takes priority for the ad metrics. When the account
+    // spans marketplaces, use the per-marketplace series for the active market
+    // (so US ad spend isn't summed with CA/MX); otherwise the aggregate.
+    const adDaily = (activeMkt && dailyByMkt) ? dailyByMkt.filter(p => p.marketplace === activeMkt) : syncedDaily
+    if (adDaily) {
+      for (const p of adDaily) {
         const existing = map.get(p.date)
         map.set(p.date, {
           date: p.date,
@@ -175,14 +206,14 @@ export function ReportingDashboard() {
           orders: p.orders,
           impressions: p.impressions,
           clicks: p.clicks,
-          // keep any totalSales already present (e.g. from SP-API, applied below)
           totalSales: existing?.totalSales,
         })
       }
     }
-    // SP-API is authoritative for TOTAL (ordered product) sales — layer it on
-    // top so TACOS, organic sales, and projections compute against real totals.
-    if (spapiDaily) {
+    // SP-API is authoritative for TOTAL (ordered product) sales — but only for
+    // the marketplace we pull it for (US). On a CA/MX view, leave totalSales
+    // undefined so TACOS/organic show "—" instead of a wrong number.
+    if (spapiDaily && totalSalesApplies) {
       for (const p of spapiDaily) {
         const existing = map.get(p.date) ?? { date: p.date, spend: 0, adSales: 0, orders: 0, impressions: 0, clicks: 0 }
         existing.totalSales = p.totalSales
@@ -196,7 +227,7 @@ export function ReportingDashboard() {
         cvr: p.clicks ? (p.orders / p.clicks) * 100 : 0,
       }))
       .sort((a, b) => a.date.localeCompare(b.date))
-  }, [bulk, biz, syncedDaily, spapiDaily])
+  }, [bulk, biz, syncedDaily, spapiDaily, dailyByMkt, activeMkt, totalSalesApplies])
 
   const range = useMemo(
     () => preset === 'custom' ? customRange(customStart, customEnd) : resolveRange(series, preset),
@@ -210,7 +241,12 @@ export function ReportingDashboard() {
   // Prefer synced campaigns from Amazon API; fall back to uploaded bulk export.
   // Only used here for the high-level "By ad product" mix — the granular
   // portfolio rollup + campaign table live on the Campaign Manager page.
-  const campaigns: CampaignRow[] = useMemo(() => mapCampaignRows(syncedCampaigns, bulk), [syncedCampaigns, bulk])
+  const campaigns: CampaignRow[] = useMemo(() => {
+    const src = (activeMkt && syncedCampaigns)
+      ? syncedCampaigns.filter((c: any) => (c.marketplace ?? 'US') === activeMkt)
+      : syncedCampaigns
+    return mapCampaignRows(src, bulk)
+  }, [syncedCampaigns, bulk, activeMkt])
   const adSummary = useMemo(() => adProductSummary(campaigns), [campaigns])
   const projection = useMemo(() => projectCurrentMonth(series, currentBundle.goals), [series, currentBundle.goals])
 
@@ -330,6 +366,13 @@ export function ReportingDashboard() {
                 { id: 'custom', label: 'Custom' },
               ]}
             />
+            {marketplaces.length > 1 && (
+              <SegmentedControl<string>
+                value={activeMkt ?? marketplaces[0].marketplace}
+                onChange={setMarketplace}
+                options={marketplaces.map(m => ({ id: m.marketplace, label: `${m.marketplace} · ${m.currency}` }))}
+              />
+            )}
             {preset === 'custom' && (
               <div className="flex items-center gap-2">
                 <input
@@ -379,7 +422,7 @@ export function ReportingDashboard() {
       </div>
 
       <div className={cx(exportSections.kpis ? '' : 'print:hidden', 'print-avoid')}>
-        <KPIRow totals={totals} prev={prevTotals} ccy={currentClient.currency} />
+        <KPIRow totals={totals} prev={prevTotals} ccy={ccy} />
       </div>
 
       <div className="grid grid-cols-1 xl:grid-cols-3 gap-5 print:block print:space-y-5">
@@ -391,7 +434,7 @@ export function ReportingDashboard() {
             </div>
             <ChartLegend />
           </div>
-          <ChartArea data={slice} ccy={currentClient.currency} />
+          <ChartArea data={slice} ccy={ccy} />
         </Panel>
 
         <Panel className={cx('print-avoid', exportSections.adProduct ? '' : 'print:hidden')}>
@@ -410,8 +453,8 @@ export function ReportingDashboard() {
                   </Pill>
                 </div>
                 <div className="mt-2 flex items-center gap-5 text-xs text-ink-mute tnum">
-                  <span>Spend <span className="text-ink ml-1">{currency(g.spend, currentClient.currency)}</span></span>
-                  <span>Sales <span className="text-ink ml-1">{currency(g.sales, currentClient.currency)}</span></span>
+                  <span>Spend <span className="text-ink ml-1">{currency(g.spend, ccy)}</span></span>
+                  <span>Sales <span className="text-ink ml-1">{currency(g.sales, ccy)}</span></span>
                 </div>
                 <div className="mt-2 h-1.5 rounded-full bg-[#f1f2f5] overflow-hidden">
                   <div
@@ -430,12 +473,12 @@ export function ReportingDashboard() {
 
       {projection && (
         <div className={cx('print-avoid', exportSections.projection ? '' : 'print:hidden')}>
-          <ProjectionPanel projection={projection} ccy={currentClient.currency} goals={currentBundle.goals} />
+          <ProjectionPanel projection={projection} ccy={ccy} goals={currentBundle.goals} />
         </div>
       )}
 
       <div className={cx('print-avoid', exportSections.salesMix ? '' : 'print:hidden')}>
-        <SalesMix totals={totals} ccy={currentClient.currency} />
+        <SalesMix totals={totals} ccy={ccy} />
       </div>
     </div>
   )
