@@ -699,14 +699,14 @@ function KPIRow({ totals, prev, ccy }: { totals: ReportingTotals; prev: Reportin
         label="Impressions"
         tone="peri"
         icon={<Eye className="w-3.5 h-3.5" />}
-        value={compact(totals.impressions)}
+        value={num(totals.impressions)}
         delta={deltaPct(totals.impressions, prev.impressions)}
       />
       <KPICard
         label="Clicks"
         tone="mint"
         icon={<MousePointerClick className="w-3.5 h-3.5" />}
-        value={compact(totals.clicks)}
+        value={num(totals.clicks)}
         delta={deltaPct(totals.clicks, prev.clicks)}
       />
       <KPICard
