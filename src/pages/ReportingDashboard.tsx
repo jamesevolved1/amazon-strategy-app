@@ -285,20 +285,34 @@ export function ReportingDashboard() {
             <button onClick={() => setSyncBanner(null)} className="text-ink-faint hover:text-ink text-2xs">Dismiss</button>
           </div>
         )}
+        {marketplaces.length > 1 && (
+          <div className="flex items-center gap-3 flex-wrap">
+            <SegmentedControl<string>
+              value={activeMkt ?? marketplaces[0].marketplace}
+              onChange={setMarketplace}
+              options={marketplaces.map(m => ({ id: m.marketplace, label: `${m.marketplace} · ${m.currency}` }))}
+            />
+            <span className="text-xs text-ink-mute">No ad data in {activeMkt} — switch marketplace, or wait for the sync to finish.</span>
+          </div>
+        )}
         <EmptyState
           title={
             inFlightReports
               ? `${pendingCount} report${pendingCount === 1 ? '' : 's'} in flight at Amazon`
-              : currentConnection
-                ? "Live data on the way"
-                : "No synced report data yet"
+              : marketplaces.length > 1
+                ? `No ad activity in ${activeMkt}`
+                : currentConnection
+                  ? "Live data on the way"
+                  : "No synced report data yet"
           }
           description={
             inFlightReports
               ? `Amazon is generating campaign reports for ${currentClient.name}. This typically takes 1-15 minutes per report. The dashboard polls every 30 seconds and will fill in automatically — no need to click Sync again.`
-              : currentConnection
-                ? `${currentClient.name} is connected to Amazon Ads. Click "Sync now" above to request campaign reports.`
-                : `Upload a bulk campaign export and business report from the Upload Reports tab, or click "Connect Amazon Ads" on the Clients page to pull live data.`
+              : marketplaces.length > 1
+                ? `${currentClient.name} has no campaigns running in the ${activeMkt} marketplace for this period. Use the marketplace toggle above to view a market with activity.`
+                : currentConnection
+                  ? `${currentClient.name} is connected to Amazon Ads. Click "Sync now" above to request campaign reports.`
+                  : `Upload a bulk campaign export and business report from the Upload Reports tab, or click "Connect Amazon Ads" on the Clients page to pull live data.`
           }
         />
       </div>
