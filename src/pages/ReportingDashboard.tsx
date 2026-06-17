@@ -35,6 +35,7 @@ export function ReportingDashboard() {
   const { connections, refresh: refreshConnections } = useAmazonConnections()
   const { connections: spapiConnections, refresh: refreshSpApi } = useSpApiConnections()
   const [syncing, setSyncing] = useState(false)
+  const [syncingAll, setSyncingAll] = useState(false)
   const [syncBanner, setSyncBanner] = useState<{ kind: 'ok' | 'err' | 'partial'; message: string } | null>(null)
 
   const currentConnection = currentClient
@@ -91,6 +92,32 @@ export function ReportingDashboard() {
       setSyncBanner({ kind, message: parts.join(' · ') || 'Synced.' })
     }
     setTimeout(() => setSyncBanner(null), 9000)
+  }
+
+  // Sync every connected client at once. Fires one sync per client in parallel
+  // (each is a fast single-client invocation) rather than one giant call, so a
+  // big book of clients can't time out a single Edge Function run. The
+  // background cron then keeps ingesting the reports as they finish.
+  const handleSyncAll = async () => {
+    setSyncingAll(true)
+    setSyncBanner(null)
+    const adsIds = connections.map(c => c.app_client_id)
+    const spapiIds = spapiConnections.map(c => c.app_client_id)
+    const total = new Set([...adsIds, ...spapiIds]).size
+    const settled = await Promise.allSettled([
+      ...adsIds.map(id => triggerSync(id)),
+      ...spapiIds.map(id => triggerSpApiSync(id)),
+    ])
+    await Promise.all([refreshConnections(), refreshSpApi()])
+    setSyncingAll(false)
+    const failures = settled.filter(s => s.status === 'rejected' || (s.status === 'fulfilled' && (s.value as { error?: string })?.error)).length
+    setSyncBanner({
+      kind: failures > 0 ? 'partial' : 'ok',
+      message: failures > 0
+        ? `Started sync for ${total} clients — ${failures} call${failures === 1 ? '' : 's'} had an issue; the background sync will retry. Reports fill in over the next few minutes.`
+        : `Sync started for all ${total} client${total === 1 ? '' : 's'}. Reports generate over the next few minutes and fill in automatically.`,
+    })
+    setTimeout(() => setSyncBanner(null), 12000)
   }
 
   // Auto-poll: while reports are in flight (Ads or SP-API), hit Sync every 30s
@@ -269,6 +296,8 @@ export function ReportingDashboard() {
           stale={stale}
           onSyncNow={handleSyncNow}
           syncing={syncing}
+          onSyncAll={handleSyncAll}
+          syncingAll={syncingAll}
           connection={currentConnection}
           canSync={Boolean(currentConnection || spapiConnection)}
         />
@@ -339,6 +368,8 @@ export function ReportingDashboard() {
           stale={stale}
           onSyncNow={handleSyncNow}
           syncing={syncing}
+          onSyncAll={handleSyncAll}
+          syncingAll={syncingAll}
           connection={currentConnection}
           canSync={Boolean(currentConnection || spapiConnection)}
         />
@@ -589,7 +620,7 @@ function ExportControl({ open, onOpen, sections, onSections }: {
 }
 
 function AccountHeader({
-  client, campaignCount, synced, history, stale, onSyncNow, syncing, connection, canSync,
+  client, campaignCount, synced, history, stale, onSyncNow, syncing, onSyncAll, syncingAll, connection, canSync,
 }: {
   client: import('../types').Client
   campaignCount: number
@@ -598,6 +629,8 @@ function AccountHeader({
   stale: boolean
   onSyncNow: () => void
   syncing: boolean
+  onSyncAll: () => void
+  syncingAll: boolean
   connection?: { last_synced_at: string | null; amazon_profile_ids: number[] | null } | undefined
   canSync?: boolean
 }) {
@@ -630,6 +663,14 @@ function AccountHeader({
           <span className={cx('w-1.5 h-1.5 rounded-full', stale ? 'bg-[#c98a1a]' : 'bg-[#1f7a4a]')} />
           {stale ? `Out of date · synced ${relativeTime(liveSynced ?? undefined)}` : `Synced ${relativeTime(liveSynced ?? undefined)}`}
         </Pill>
+        <Button
+          variant="secondary"
+          onClick={onSyncAll}
+          disabled={syncingAll}
+          icon={syncingAll ? <Spinner size={14} /> : <RefreshCcw className="w-4 h-4" />}
+        >
+          {syncingAll ? 'Syncing all…' : 'Sync all'}
+        </Button>
         <Button
           onClick={onSyncNow}
           disabled={syncing || !canSync}
