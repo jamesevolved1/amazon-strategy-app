@@ -128,14 +128,20 @@ async function processAds(sb: any, conn: any, clientId: string, clientSecret: st
     if (s.status === "COMPLETED" && s.url) {
       try {
         const rows = await downloadGzipJson(s.url)
-        for (const r of rows) ingestedRows.push({ ...r, _profileId: p.profileId, _adProduct: p.adProduct })
+        for (const r of rows) ingestedRows.push({ ...r, _profileId: p.profileId, _adProduct: p.adProduct, _batchId: p.batchId })
         downloads++
       } catch { stillPending.push({ ...p, status: "FAILED" }) }
     } else if (s.status === "FAILED") { /* drop */ }
     else stillPending.push({ ...p, status: s.status })
   }
 
-  if (ingestedRows.length > 0) synced = mergeAds(synced, ingestedRows, profileMap)
+  if (ingestedRows.length > 0) {
+    const batchId = ingestedRows[0]._batchId
+    // New batch = fresh 30-day pull → REPLACE the window, don't accumulate.
+    if (batchId && synced.batchId !== batchId) synced = { ...synced, campaigns: [], daily: [], dailyByMkt: [] }
+    synced = mergeAds(synced, ingestedRows, profileMap)
+    if (batchId) synced.batchId = batchId
+  }
   let mktChanged = false
   if (profileMeta.length > 0) { synced.profiles = profileMeta; mktChanged = true }
 
@@ -184,6 +190,7 @@ async function requestAdsReports(profileIds: number[], token: string, clientId: 
   const end = new Date(), start = new Date(Date.now() - ADS_DAYS_BACK * 86_400_000)
   const startIso = isoDate(start), endIso = isoDate(end)
   const out: any[] = []
+  const batchId = crypto.randomUUID()
   for (const profileId of profileIds) {
     for (const product of AD_PRODUCTS) {
       try {
@@ -205,7 +212,7 @@ async function requestAdsReports(profileIds: number[], token: string, clientId: 
         })
         if (resp.ok) {
           const j = await resp.json()
-          out.push({ reportId: j.reportId, profileId, adProduct: product.label, status: "PENDING", requestedAt: new Date().toISOString(), startDate: startIso, endDate: endIso })
+          out.push({ reportId: j.reportId, profileId, adProduct: product.label, status: "PENDING", requestedAt: new Date().toISOString(), startDate: startIso, endDate: endIso, batchId })
         }
       } catch { /* skip */ }
     }
