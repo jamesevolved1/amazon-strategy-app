@@ -845,8 +845,8 @@ function ProjectionPanel({
         <ProjStat
           label="Projected ad spend"
           tone="peri"
-          value={currency(p.projected.spend, ccy, true)}
-          mtd={`${currency(p.mtd.spend, ccy, true)} MTD`}
+          value={currencyWhole(p.projected.spend, ccy)}
+          mtd={`${currencyWhole(p.mtd.spend, ccy)} MTD`}
           pace={Number.isFinite(spendPace)
             ? { pct: spendPace, label: `${percent(spendPace, 0)} of budget`, good: spendPace <= 100 }
             : (goals.monthlyAdBudget > 0 ? undefined : { pct: NaN, label: 'no budget set', good: true })}
@@ -854,8 +854,8 @@ function ProjectionPanel({
         <ProjStat
           label={`Projected ${salesLabel.toLowerCase()}`}
           tone="mint"
-          value={currency(projSales, ccy, true)}
-          mtd={`${currency(p.hasTotalSales ? p.mtd.totalSales : p.mtd.adSales, ccy, true)} MTD`}
+          value={currencyWhole(projSales, ccy)}
+          mtd={`${currencyWhole(p.hasTotalSales ? p.mtd.totalSales : p.mtd.adSales, ccy)} MTD`}
           pace={Number.isFinite(salesPace)
             ? { pct: salesPace, label: `${percent(salesPace, 0)} of goal`, good: salesPace >= 100 }
             : undefined}
