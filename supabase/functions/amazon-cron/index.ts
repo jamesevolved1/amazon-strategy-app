@@ -32,11 +32,18 @@ const SPAPI_HOST: Record<string, string> = {
 const PRIMARY_MARKETPLACE: Record<string, string> = {
   NA: "ATVPDKIKX0DER", EU: "A1F83G8C2ARO7P", FE: "A1VC38T7YXB528",
 }
+// SP + SD via v3 async reporting. SB via the v2 API (v3 sbCampaigns silently
+// drops legacy non-multi-ad-group SB campaigns — see runSbV2Pipeline / foldSb).
 const AD_PRODUCTS = [
   { label: "SP", amazon: "SPONSORED_PRODUCTS", reportTypeId: "spCampaigns" },
-  { label: "SB", amazon: "SPONSORED_BRANDS",  reportTypeId: "sbCampaigns" },
   { label: "SD", amazon: "SPONSORED_DISPLAY", reportTypeId: "sdCampaigns" },
 ]
+
+const SB_V2_METRICS = "campaignId,campaignName,cost,impressions,clicks,attributedSales14d,attributedConversions14d"
+const SB_RECENT_MUTABLE_DAYS = 4
+const SB_REFRESH_MS = 6 * 60 * 60 * 1000
+const SB_V2_REQUESTS_PER_RUN = 8
+const SB_WINDOW_DAYS = 30
 
 // Pacing / safety
 const WALL_BUDGET_MS = 45_000          // stop starting new work past this
@@ -135,55 +142,70 @@ async function processAds(sb: any, conn: any, clientId: string, clientSecret: st
     else stillPending.push({ ...p, status: s.status })
   }
 
+  // SP+SD live in the v3 "base" fields; SB comes from the v2 pipeline and is
+  // folded in afterward. Seed base from legacy fields on first run (strip old SB).
+  if (!synced.baseCampaigns) {
+    synced.baseCampaigns = (synced.campaigns ?? []).filter((c: any) => c.type !== "SB")
+    synced.baseDaily = synced.daily ?? []
+    synced.baseDailyByMkt = synced.dailyByMkt ?? []
+  }
   if (ingestedRows.length > 0) {
     const batchId = ingestedRows[0]._batchId
-    // New batch = fresh 30-day pull → REPLACE the window, don't accumulate.
-    if (batchId && synced.batchId !== batchId) synced = { ...synced, campaigns: [], daily: [], dailyByMkt: [] }
-    synced = mergeAds(synced, ingestedRows, profileMap)
+    if (batchId && synced.batchId !== batchId) { synced.baseCampaigns = []; synced.baseDaily = []; synced.baseDailyByMkt = [] }
+    const merged = mergeAds({ campaigns: synced.baseCampaigns, daily: synced.baseDaily, dailyByMkt: synced.baseDailyByMkt }, ingestedRows, profileMap)
+    synced.baseCampaigns = merged.campaigns; synced.baseDaily = merged.daily; synced.baseDailyByMkt = merged.dailyByMkt
     if (batchId) synced.batchId = batchId
   }
-  let mktChanged = false
-  if (profileMeta.length > 0) { synced.profiles = profileMeta; mktChanged = true }
 
-  // Back-fill campaign→portfolio labels. Reports can't carry portfolioId, so we
-  // fetch it separately (SP/SB/SD). Runs on fresh data OR when existing
-  // campaigns lack labels and the cached map is stale — so clients synced
-  // before portfolio support get labeled within one cron cycle.
-  let enriched = false
+  // Sponsored Brands (v2) pipeline — poll/ingest/request cached day-reports.
+  try { synced.sbV2 = await runSbV2Pipeline(synced.sbV2, profileMeta, token, clientId) }
+  catch (e) { console.error("sbV2", e instanceof Error ? e.message : String(e)) }
+  const sbDownloads = synced.sbV2?.lastDownloads ?? 0
+
+  if (profileMeta.length > 0) synced.profiles = profileMeta
+
+  // Back-fill campaign→portfolio labels on the SP+SD base.
   const lastCheck = synced.portfolioCheckedAt ? new Date(synced.portfolioCheckedAt).getTime() : 0
   const mapIsStale = Date.now() - lastCheck > PORTFOLIO_REFRESH_MS
-  if ((synced.campaigns?.length ?? 0) > 0 && profileIds.length > 0 && (ingestedRows.length > 0 || mapIsStale)) {
+  if ((synced.baseCampaigns?.length ?? 0) > 0 && profileIds.length > 0 && (ingestedRows.length > 0 || mapIsStale)) {
     try {
       const map = await buildPortfolioMap(profileIds, token, clientId)
       if (map.size > 0) {
-        synced.campaigns = synced.campaigns.map((c: any) => {
+        synced.baseCampaigns = synced.baseCampaigns.map((c: any) => {
           const name = c.campaignId ? map.get(String(c.campaignId)) : undefined
           return name ? { ...c, portfolio: name } : c
         })
       }
       synced.portfolioCheckedAt = new Date().toISOString()
-      enriched = true
     } catch (e) {
       console.error("portfolio enrich", e instanceof Error ? e.message : String(e))
     }
   }
 
-  // Request fresh when nothing pending and data is stale.
+  // Fold SB-v2 into the base → the combined arrays the frontend reads.
+  {
+    const folded = foldSb({ campaigns: synced.baseCampaigns ?? [], daily: synced.baseDaily ?? [], dailyByMkt: synced.baseDailyByMkt ?? [] }, synced.sbV2?.byDate ?? {})
+    synced.campaigns = folded.campaigns; synced.daily = folded.daily; synced.dailyByMkt = folded.dailyByMkt
+  }
+
+  // Request fresh SP/SD reports when stale. Tracked separately from
+  // synced_data_at (which SB downloads bump) so v3 still refreshes on schedule.
   let newPending: any[] = []
-  const stale = !conn.synced_data_at || (Date.now() - new Date(conn.synced_data_at).getTime() > STALE_MS)
-  if (stillPending.length === 0 && pending.length === 0 && stale && profileIds.length > 0) {
+  const adsStale = !synced.adsRefreshedAt || (Date.now() - synced.adsRefreshedAt > STALE_MS)
+  if (stillPending.length === 0 && pending.length === 0 && adsStale && profileIds.length > 0) {
     newPending = await requestAdsReports(profileIds, token, clientId)
+    if (newPending.length > 0) synced.adsRefreshedAt = Date.now()
   }
 
   const updates: any = {
     access_token: token, amazon_profile_ids: profileIds,
     pending_reports: [...stillPending, ...newPending],
     last_synced_at: new Date().toISOString(), last_sync_error: null,
+    synced_data: synced,
   }
-  if (ingestedRows.length > 0 || enriched || mktChanged) updates.synced_data = synced
-  if (ingestedRows.length > 0) updates.synced_data_at = new Date().toISOString()
+  if (ingestedRows.length > 0 || sbDownloads > 0) updates.synced_data_at = new Date().toISOString()
   await sb.from("amazon_connections").update(updates).eq("id", conn.id)
-  return { ingested: downloads }
+  return { ingested: downloads + sbDownloads }
 }
 
 async function requestAdsReports(profileIds: number[], token: string, clientId: string) {
@@ -460,6 +482,169 @@ async function downloadGzipJson(url: string): Promise<any[]> {
   const text = new TextDecoder().decode(gunzip(new Uint8Array(await resp.arrayBuffer())))
   const parsed = JSON.parse(text)
   return Array.isArray(parsed) ? parsed : []
+}
+
+// ===================== Sponsored Brands via v2 reporting =====================
+function windowDatesIso(daysBack: number): string[] {
+  const out: string[] = []
+  const today = new Date()
+  for (let i = 0; i < daysBack; i++) out.push(isoDate(new Date(today.getTime() - i * 86_400_000)))
+  return out
+}
+const isoToYmd = (iso: string) => iso.replace(/-/g, "")
+
+async function getActiveSbProfiles(profileMeta: any[], token: string, clientId: string) {
+  const active: { profileId: number; mkt: string; currency: string }[] = []
+  for (const p of profileMeta) {
+    try {
+      const r = await fetch(`${ADS_API}/sb/v4/campaigns/list`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}`, "Amazon-Advertising-API-ClientId": clientId, "Amazon-Advertising-API-Scope": String(p.profileId), Accept: "application/vnd.sbcampaignresource.v4+json", "Content-Type": "application/vnd.sbcampaignresource.v4+json" },
+        body: JSON.stringify({ maxResults: 100 }),
+      })
+      if (!r.ok) continue
+      const j = await r.json()
+      if ((j.campaigns?.length ?? 0) > 0) active.push({ profileId: p.profileId, mkt: p.marketplace, currency: p.currency })
+    } catch { /* ignore */ }
+  }
+  return active
+}
+
+async function requestSbV2Report(reportDate: string, profileId: number, token: string, clientId: string): Promise<string> {
+  const resp = await fetch(`${ADS_API}/v2/hsa/campaigns/report`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}`, "Amazon-Advertising-API-ClientId": clientId, "Amazon-Advertising-API-Scope": String(profileId), "Content-Type": "application/json" },
+    body: JSON.stringify({ reportDate: isoToYmd(reportDate), metrics: SB_V2_METRICS, creativeType: "all" }),
+  })
+  if (resp.status !== 202 && resp.status !== 200) throw new Error(`sbV2 ${resp.status}`)
+  return (await resp.json()).reportId as string
+}
+
+async function getSbV2Status(reportId: string, profileId: number, token: string, clientId: string): Promise<{ status: string; location?: string }> {
+  const resp = await fetch(`${ADS_API}/v2/reports/${reportId}`, {
+    headers: { Authorization: `Bearer ${token}`, "Amazon-Advertising-API-ClientId": clientId, "Amazon-Advertising-API-Scope": String(profileId) },
+  })
+  if (!resp.ok) return { status: "PENDING" }
+  return await resp.json()
+}
+
+async function downloadSbV2(location: string, profileId: number, token: string, clientId: string): Promise<any[]> {
+  const resp = await fetch(location, {
+    headers: { Authorization: `Bearer ${token}`, "Amazon-Advertising-API-ClientId": clientId, "Amazon-Advertising-API-Scope": String(profileId) },
+  })
+  if (!resp.ok) throw new Error(`sbV2 dl ${resp.status}`)
+  const ab = new Uint8Array(await resp.arrayBuffer())
+  let text: string
+  try { text = new TextDecoder().decode(gunzip(ab)) } catch { text = new TextDecoder().decode(ab) }
+  const safe = text.replace(/"campaignId":\s*(\d{16,})/g, '"campaignId":"$1"')
+  const parsed = JSON.parse(safe)
+  return Array.isArray(parsed) ? parsed : []
+}
+
+async function runSbV2Pipeline(sbV2In: any, profileMeta: any[], token: string, clientId: string): Promise<any> {
+  const sbV2: any = sbV2In ?? { byDate: {}, pending: [], refreshedAt: 0 }
+  sbV2.byDate = sbV2.byDate ?? {}
+  sbV2.pending = sbV2.pending ?? []
+
+  if (!sbV2.activeProfiles || (Date.now() - (sbV2.activeCheckedAt ?? 0)) > 24 * 60 * 60 * 1000) {
+    try { sbV2.activeProfiles = await getActiveSbProfiles(profileMeta, token, clientId); sbV2.activeCheckedAt = Date.now() } catch { /* keep */ }
+  }
+  const activeProfiles = sbV2.activeProfiles ?? []
+
+  const now = Date.now()
+  let downloads = 0
+  const stillPending: any[] = []
+  for (const p of sbV2.pending) {
+    if (p.requestedAt && now - p.requestedAt > 8 * 60_000) continue  // expire stuck → re-requested as missing
+    if (downloads >= SB_V2_REQUESTS_PER_RUN) { stillPending.push(p); continue }
+    try {
+      const st = await getSbV2Status(p.reportId, p.profileId, token, clientId)
+      if (st.status === "SUCCESS" && st.location) {
+        const raw = await downloadSbV2(st.location, p.profileId, token, clientId)
+        sbV2.byDate[`${p.mkt}:${p.reportDate}`] = raw.map((r: any) => ({
+          campaignId: String(r.campaignId), campaignName: r.campaignName ?? String(r.campaignId),
+          mkt: p.mkt, currency: p.currency,
+          cost: Number(r.cost ?? 0), sales: Number(r.attributedSales14d ?? 0), orders: Number(r.attributedConversions14d ?? 0),
+          impressions: Number(r.impressions ?? 0), clicks: Number(r.clicks ?? 0),
+        }))
+        downloads++
+      } else if (st.status === "FAILURE") { /* drop */ }
+      else stillPending.push(p)
+    } catch { stillPending.push(p) }
+  }
+  sbV2.pending = stillPending
+
+  // Top up requests up to the per-run cap (a slow report no longer blocks backfill).
+  if (activeProfiles.length > 0 && sbV2.pending.length < SB_V2_REQUESTS_PER_RUN) {
+    const dates = windowDatesIso(SB_WINDOW_DAYS)
+    const recentCutoff = dates.slice(0, SB_RECENT_MUTABLE_DAYS)
+    const refreshDue = (now - (sbV2.refreshedAt ?? 0)) > SB_REFRESH_MS
+    const inFlight = new Set(sbV2.pending.map((p: any) => `${p.mkt}:${p.reportDate}`))
+    let slots = SB_V2_REQUESTS_PER_RUN - sbV2.pending.length
+    let touchedRecent = false
+    for (const prof of activeProfiles) {
+      for (const iso of dates) {
+        if (slots <= 0) break
+        const key = `${prof.mkt}:${iso}`
+        if (inFlight.has(key)) continue
+        const isRecent = recentCutoff.includes(iso)
+        if (sbV2.byDate[key] && !(isRecent && refreshDue)) continue
+        try {
+          const reportId = await requestSbV2Report(iso, prof.profileId, token, clientId)
+          sbV2.pending.push({ reportId, reportDate: iso, profileId: prof.profileId, mkt: prof.mkt, currency: prof.currency, requestedAt: now })
+          inFlight.add(key); slots--
+          if (isRecent) touchedRecent = true
+        } catch { /* retry next run */ }
+      }
+      if (slots <= 0) break
+    }
+    if (refreshDue && touchedRecent) sbV2.refreshedAt = now
+  }
+
+  const keep = new Set(windowDatesIso(SB_WINDOW_DAYS + 2))
+  for (const k of Object.keys(sbV2.byDate)) { if (!keep.has(k.split(":")[1])) delete sbV2.byDate[k] }
+  sbV2.lastDownloads = downloads
+  return sbV2
+}
+
+function foldSb(base: any, byDate: any): { campaigns: any[]; daily: any[]; dailyByMkt: any[] } {
+  const sbCamp = new Map<string, any>(), sbDaily = new Map<string, any>(), sbDailyMkt = new Map<string, any>()
+  for (const [key, rows] of Object.entries(byDate ?? {})) {
+    const date = key.split(":")[1]
+    for (const r of rows as any[]) {
+      const ck = `SB:${r.campaignId}`
+      const c = sbCamp.get(ck) ?? { campaign: r.campaignName, campaignId: r.campaignId, type: "SB", marketplace: r.mkt, currency: r.currency, impressions: 0, clicks: 0, spend: 0, adSales: 0, orders: 0 }
+      c.impressions += r.impressions; c.clicks += r.clicks; c.spend += r.cost; c.adSales += r.sales; c.orders += r.orders
+      sbCamp.set(ck, c)
+      const d = sbDaily.get(date) ?? { date, spend: 0, adSales: 0, orders: 0, impressions: 0, clicks: 0 }
+      d.spend += r.cost; d.adSales += r.sales; d.orders += r.orders; d.impressions += r.impressions; d.clicks += r.clicks
+      sbDaily.set(date, d)
+      const mk = `${r.mkt}:${date}`
+      const dm = sbDailyMkt.get(mk) ?? { marketplace: r.mkt, date, spend: 0, adSales: 0, orders: 0, impressions: 0, clicks: 0 }
+      dm.spend += r.cost; dm.adSales += r.sales; dm.orders += r.orders; dm.impressions += r.impressions; dm.clicks += r.clicks
+      sbDailyMkt.set(mk, dm)
+    }
+  }
+  const withR = (c: any) => ({ ...c, ctr: c.impressions ? (c.clicks / c.impressions) * 100 : 0, cvr: c.clicks ? (c.orders / c.clicks) * 100 : 0, roas: c.spend > 0 ? c.adSales / c.spend : 0, acos: c.adSales > 0 ? (c.spend / c.adSales) * 100 : 0, cpc: c.clicks > 0 ? c.spend / c.clicks : 0 })
+  const dRatios = (d: any) => ({ ...d, ctr: d.impressions ? (d.clicks / d.impressions) * 100 : 0, cvr: d.clicks ? (d.orders / d.clicks) * 100 : 0 })
+  const campaigns = [...(base.campaigns ?? []), ...Array.from(sbCamp.values()).map(withR)]
+  const dmap = new Map<string, any>()
+  for (const d of base.daily ?? []) dmap.set(d.date, { ...d })
+  for (const [date, s] of sbDaily) {
+    const d = dmap.get(date) ?? { date, spend: 0, adSales: 0, orders: 0, impressions: 0, clicks: 0 }
+    d.spend = (d.spend ?? 0) + s.spend; d.adSales = (d.adSales ?? 0) + s.adSales; d.orders = (d.orders ?? 0) + s.orders; d.impressions = (d.impressions ?? 0) + s.impressions; d.clicks = (d.clicks ?? 0) + s.clicks
+    dmap.set(date, d)
+  }
+  const dmkt = new Map<string, any>()
+  for (const d of base.dailyByMkt ?? []) dmkt.set(`${d.marketplace}:${d.date}`, { ...d })
+  for (const [mk, s] of sbDailyMkt) {
+    const d = dmkt.get(mk) ?? { marketplace: s.marketplace, date: s.date, spend: 0, adSales: 0, orders: 0, impressions: 0, clicks: 0 }
+    d.spend = (d.spend ?? 0) + s.spend; d.adSales = (d.adSales ?? 0) + s.adSales; d.orders = (d.orders ?? 0) + s.orders; d.impressions = (d.impressions ?? 0) + s.impressions; d.clicks = (d.clicks ?? 0) + s.clicks
+    dmkt.set(mk, d)
+  }
+  const daily = Array.from(dmap.values()).map(dRatios).sort((a, b) => a.date.localeCompare(b.date))
+  const dailyByMkt = Array.from(dmkt.values()).map(dRatios).sort((a, b) => a.date.localeCompare(b.date))
+  return { campaigns, daily, dailyByMkt }
 }
 
 function isoDate(d: Date) { return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(d.getUTCDate()).padStart(2, "0")}` }

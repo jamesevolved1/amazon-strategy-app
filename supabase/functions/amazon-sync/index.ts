@@ -35,11 +35,25 @@ const REPORT_DAYS_BACK = 30
 const PORTFOLIO_REFRESH_MS = 12 * 60 * 60 * 1000
 
 // Map our short ad-product label to Amazon's enum + report type.
+// Sponsored Products + Sponsored Display go through the v3 async reporting API.
+// Sponsored Brands is handled SEPARATELY via the v2 reporting API (see the
+// SB-v2 pipeline below): the v3 sbCampaigns report silently DROPS legacy
+// (non-multi-ad-group) SB campaigns, which undercounts spend AND sales. v2
+// returns every SB campaign, so we pull SB from v2 and fold it in.
 const AD_PRODUCTS = [
   { label: 'SP' as const, amazon: 'SPONSORED_PRODUCTS', reportTypeId: 'spCampaigns' },
-  { label: 'SB' as const, amazon: 'SPONSORED_BRANDS',  reportTypeId: 'sbCampaigns' },
   { label: 'SD' as const, amazon: 'SPONSORED_DISPLAY', reportTypeId: 'sdCampaigns' },
 ]
+
+// ----- Sponsored Brands via v2 reporting -----
+// v2 reports are per-DAY, so we cache each settled day in synced_data.sbV2.byDate
+// and only re-request days that are missing or still mutable (recent). This keeps
+// the per-sync Amazon report volume bounded.
+const SB_V2_METRICS = "campaignId,campaignName,cost,impressions,clicks,attributedSales14d,attributedConversions14d"
+const SB_RECENT_MUTABLE_DAYS = 4   // re-fetch the last N days each refresh (attribution still settling)
+const SB_REFRESH_MS = 6 * 60 * 60 * 1000  // re-pull recent SB days at most every 6h
+const SB_V2_REQUESTS_PER_RUN = 8   // cap new v2 report requests per invocation (throttle-safe)
+const SB_WINDOW_DAYS = REPORT_DAYS_BACK
 
 interface PendingReport {
   reportId: string
@@ -202,20 +216,41 @@ async function syncOne(
   // 4. Merge ingested data with existing synced_data (so unfinished profile
   //    reports from earlier sync waves don't get clobbered).
   let sideDataChangedMkt = false
-  let synced = conn.synced_data ?? { campaigns: [], daily: [] }
+  const synced: any = conn.synced_data ?? { campaigns: [], daily: [] }
+  // SP+SD live in the v3 "base" fields. SB comes from the v2 pipeline and is
+  // folded in afterward. Seed base from legacy fields on first run after deploy
+  // (strip any old SB so it isn't double-counted once v2 SB lands).
+  if (!synced.baseCampaigns) {
+    synced.baseCampaigns = (synced.campaigns ?? []).filter((c: any) => c.type !== 'SB')
+    synced.baseDaily = synced.daily ?? []
+    synced.baseDailyByMkt = synced.dailyByMkt ?? []
+  }
   if (ingestedRows.length > 0) {
     const batchId = ingestedRows[0]._batchId as string | undefined
     // A new report batch = a fresh 30-day pull. Clear the previous window's
-    // totals before merging so we REPLACE rather than accumulate (the old
-    // behavior re-added the same 30 days every cycle, inflating without bound).
-    // Within a batch (reports trickle in over a few runs), the id matches, so
-    // SP/SB/SD across profiles still combine correctly.
-    if (batchId && (synced as any).batchId !== batchId) {
-      synced = { ...synced, campaigns: [], daily: [], dailyByMkt: [] }
+    // base totals before merging so we REPLACE rather than accumulate. Within a
+    // batch (reports trickle in over a few runs), the id matches, so SP/SD
+    // across profiles still combine correctly.
+    if (batchId && synced.batchId !== batchId) {
+      synced.baseCampaigns = []; synced.baseDaily = []; synced.baseDailyByMkt = []
     }
-    synced = mergeReportRows(synced, ingestedRows, profileMap)
-    if (batchId) (synced as any).batchId = batchId
+    const merged = mergeReportRows(
+      { campaigns: synced.baseCampaigns, daily: synced.baseDaily, dailyByMkt: synced.baseDailyByMkt },
+      ingestedRows, profileMap,
+    )
+    synced.baseCampaigns = merged.campaigns
+    synced.baseDaily = merged.daily
+    synced.baseDailyByMkt = merged.dailyByMkt
+    if (batchId) synced.batchId = batchId
   }
+
+  // ----- Sponsored Brands (v2) pipeline: poll/ingest/request cached day-reports -----
+  try {
+    synced.sbV2 = await runSbV2Pipeline(synced.sbV2, profileMeta, accessToken, adsClientId)
+  } catch (e) {
+    console.error("sbV2 pipeline failed", e instanceof Error ? e.message : String(e))
+  }
+  const sbDownloads = (synced.sbV2?.lastDownloads ?? 0) as number
   // Always keep the profile→marketplace map fresh on the synced blob (cheap,
   // and the frontend marketplace selector reads it).
   if (profileMeta.length > 0) {
@@ -233,12 +268,12 @@ async function syncOne(
   let enriched = false
   const lastCheck = synced.portfolioCheckedAt ? new Date(synced.portfolioCheckedAt).getTime() : 0
   const mapIsStale = Date.now() - lastCheck > PORTFOLIO_REFRESH_MS
-  const hasCampaigns = (synced.campaigns?.length ?? 0) > 0
+  const hasCampaigns = (synced.baseCampaigns?.length ?? 0) > 0
   if (hasCampaigns && profileIds.length > 0 && (ingestedRows.length > 0 || mapIsStale)) {
     try {
       const { map: portfolioMap, debug } = await buildPortfolioMap(profileIds, accessToken, adsClientId)
       if (portfolioMap.size > 0) {
-        synced.campaigns = synced.campaigns.map((c: any) => {
+        synced.baseCampaigns = synced.baseCampaigns.map((c: any) => {
           const name = c.campaignId ? portfolioMap.get(String(c.campaignId)) : undefined
           return name ? { ...c, portfolio: name } : c
         })
@@ -246,17 +281,26 @@ async function syncOne(
         // lookup keeps retrying on the next sync instead of going quiet for 12h.
         synced.portfolioCheckedAt = new Date().toISOString()
       }
-      // Diagnostic: record what each Amazon call returned + a couple of sample
-      // ids so we can spot id-format mismatches. Harmless; the frontend ignores
-      // unknown fields. (Temporary while we verify portfolio mapping.)
       synced.portfolioDebug = {
         ...debug,
-        sampleSyncedCampaignIds: (synced.campaigns ?? []).slice(0, 3).map((c: any) => String(c.campaignId)),
+        sampleSyncedCampaignIds: (synced.baseCampaigns ?? []).slice(0, 3).map((c: any) => String(c.campaignId)),
       }
       enriched = true
     } catch (e) {
       console.error("portfolio enrich failed", e instanceof Error ? e.message : String(e))
     }
+  }
+
+  // Fold cached SB-v2 data into the SP+SD base → the combined campaigns/daily/
+  // dailyByMkt the frontend reads. Rebuilt every sync, so it never double-counts.
+  {
+    const folded = foldSb(
+      { campaigns: synced.baseCampaigns ?? [], daily: synced.baseDaily ?? [], dailyByMkt: synced.baseDailyByMkt ?? [] },
+      synced.sbV2?.byDate ?? {},
+    )
+    synced.campaigns = folded.campaigns
+    synced.daily = folded.daily
+    synced.dailyByMkt = folded.dailyByMkt
   }
 
   // 5. If no pending reports left, request a fresh batch
@@ -285,10 +329,10 @@ async function syncOne(
     last_synced_at: new Date().toISOString(),
     last_sync_error: reqError,
   }
-  if (ingestedRows.length > 0 || enriched || sideDataChangedMkt) {
-    updates.synced_data = synced
-  }
-  if (ingestedRows.length > 0) {
+  // The SB-v2 pipeline + fold run on every invocation, so always persist.
+  void enriched; void sideDataChangedMkt
+  updates.synced_data = synced
+  if (ingestedRows.length > 0 || sbDownloads > 0) {
     updates.synced_data_at = new Date().toISOString()
   }
   await supabase.from("amazon_connections").update(updates).eq("id", conn.id)
@@ -297,7 +341,8 @@ async function syncOne(
 
   return {
     profiles_found: profileIds.length,
-    pending_count: finalPending.length,
+    // Include SB-v2 backfill so the frontend keeps polling until SB is complete.
+    pending_count: finalPending.length + (synced.sbV2?.pending?.length ?? 0),
     ingested_reports: downloads,
     campaigns_after_sync: synced.campaigns.length,
     all_done: allDone,
@@ -876,6 +921,253 @@ function mergeReportRows(
 
 function isoDate(d: Date): string {
   return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`
+}
+
+// ===================== Sponsored Brands via v2 reporting =====================
+// The v3 sbCampaigns report omits legacy (non-multi-ad-group) SB campaigns,
+// undercounting both spend and sales. v2 returns every SB campaign but reports
+// one day at a time, so we cache settled days and only re-fetch recent ones.
+
+interface SbV2Pending { reportId: string; reportDate: string; profileId: number; mkt: string; currency: string; requestedAt?: number }
+interface SbV2Row { campaignId: string; campaignName: string; mkt: string; currency: string; cost: number; sales: number; orders: number; impressions: number; clicks: number }
+interface SbV2State {
+  byDate: Record<string, SbV2Row[]>   // key: "<mkt>:<YYYY-MM-DD>"
+  pending: SbV2Pending[]
+  refreshedAt?: number
+  activeProfiles?: { profileId: number; mkt: string; currency: string }[]
+  activeCheckedAt?: number
+}
+
+function emptySbV2(): SbV2State { return { byDate: {}, pending: [], refreshedAt: 0, activeProfiles: undefined, activeCheckedAt: 0 } }
+
+function windowDatesIso(daysBack: number): string[] {
+  const out: string[] = []
+  const today = new Date()
+  for (let i = 0; i < daysBack; i++) {
+    const d = new Date(today.getTime() - i * 86_400_000)
+    out.push(isoDate(d))
+  }
+  return out  // most-recent first
+}
+const isoToYmd = (iso: string) => iso.replace(/-/g, "")
+
+// Which profiles actually run Sponsored Brands? Avoids firing v2 reports at
+// profiles with no SB campaigns. Cheap v4 list call per profile, cached ~24h.
+async function getActiveSbProfiles(profileMeta: ProfileMeta[], accessToken: string, clientId: string) {
+  const active: { profileId: number; mkt: string; currency: string }[] = []
+  for (const p of profileMeta) {
+    try {
+      const r = await fetch(`${AMAZON_ADS_API}/sb/v4/campaigns/list`, {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${accessToken}`,
+          "Amazon-Advertising-API-ClientId": clientId,
+          "Amazon-Advertising-API-Scope": String(p.profileId),
+          "Accept": "application/vnd.sbcampaignresource.v4+json",
+          "Content-Type": "application/vnd.sbcampaignresource.v4+json",
+        },
+        body: JSON.stringify({ maxResults: 100 }),
+      })
+      if (!r.ok) continue
+      const j = await r.json()
+      if ((j.campaigns?.length ?? 0) > 0) active.push({ profileId: p.profileId, mkt: p.marketplace, currency: p.currency })
+    } catch { /* ignore */ }
+  }
+  return active
+}
+
+async function requestSbV2Report(reportDate: string, profileId: number, accessToken: string, clientId: string): Promise<string> {
+  const resp = await fetch(`${AMAZON_ADS_API}/v2/hsa/campaigns/report`, {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${accessToken}`,
+      "Amazon-Advertising-API-ClientId": clientId,
+      "Amazon-Advertising-API-Scope": String(profileId),
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ reportDate: isoToYmd(reportDate), metrics: SB_V2_METRICS, creativeType: "all" }),
+  })
+  if (resp.status !== 202 && resp.status !== 200) {
+    throw new Error(`sbV2 request ${resp.status}: ${(await resp.text()).slice(0, 120)}`)
+  }
+  return (await resp.json()).reportId as string
+}
+
+async function getSbV2Status(reportId: string, profileId: number, accessToken: string, clientId: string): Promise<{ status: string; location?: string }> {
+  const resp = await fetch(`${AMAZON_ADS_API}/v2/reports/${reportId}`, {
+    headers: {
+      "Authorization": `Bearer ${accessToken}`,
+      "Amazon-Advertising-API-ClientId": clientId,
+      "Amazon-Advertising-API-Scope": String(profileId),
+    },
+  })
+  if (!resp.ok) return { status: "PENDING" }
+  return await resp.json()
+}
+
+async function downloadSbV2(location: string, profileId: number, accessToken: string, clientId: string): Promise<any[]> {
+  // The v2 report `location` is an advertising-api URL that requires auth headers.
+  const resp = await fetch(location, {
+    headers: {
+      "Authorization": `Bearer ${accessToken}`,
+      "Amazon-Advertising-API-ClientId": clientId,
+      "Amazon-Advertising-API-Scope": String(profileId),
+    },
+  })
+  if (!resp.ok) throw new Error(`sbV2 download ${resp.status}`)
+  const ab = new Uint8Array(await resp.arrayBuffer())
+  let text: string
+  try { text = new TextDecoder().decode(gunzip(ab)) } catch { text = new TextDecoder().decode(ab) }
+  // Preserve 18-digit campaign IDs (beyond JS safe-int) by quoting them before parse.
+  const safe = text.replace(/"campaignId":\s*(\d{16,})/g, '"campaignId":"$1"')
+  const parsed = JSON.parse(safe)
+  return Array.isArray(parsed) ? parsed : []
+}
+
+// One SB-v2 step per sync: poll pending day-reports, ingest completed ones, then
+// request any missing/stale days (bounded per run). Mutates + returns sbV2.
+async function runSbV2Pipeline(
+  sbV2In: SbV2State | undefined,
+  profileMeta: ProfileMeta[],
+  accessToken: string,
+  clientId: string,
+): Promise<SbV2State> {
+  const sbV2: SbV2State = sbV2In ?? emptySbV2()
+  sbV2.byDate = sbV2.byDate ?? {}
+  sbV2.pending = sbV2.pending ?? []
+
+  // Refresh the list of SB-active profiles ~daily.
+  if (!sbV2.activeProfiles || (Date.now() - (sbV2.activeCheckedAt ?? 0)) > 24 * 60 * 60 * 1000) {
+    try {
+      sbV2.activeProfiles = await getActiveSbProfiles(profileMeta, accessToken, clientId)
+      sbV2.activeCheckedAt = Date.now()
+    } catch { /* keep prior */ }
+  }
+  const activeProfiles = sbV2.activeProfiles ?? []
+
+  // 1) Poll pending day-reports (cap downloads per run).
+  const now = Date.now()
+  let downloads = 0
+  const stillPending: SbV2Pending[] = []
+  for (const p of sbV2.pending) {
+    if (p.requestedAt && now - p.requestedAt > 8 * 60_000) continue  // expire stuck → re-requested as missing
+    if (downloads >= SB_V2_REQUESTS_PER_RUN) { stillPending.push(p); continue }
+    try {
+      const st = await getSbV2Status(p.reportId, p.profileId, accessToken, clientId)
+      if (st.status === "SUCCESS" && st.location) {
+        const raw = await downloadSbV2(st.location, p.profileId, accessToken, clientId)
+        sbV2.byDate[`${p.mkt}:${p.reportDate}`] = raw.map((r: any) => ({
+          campaignId: String(r.campaignId), campaignName: r.campaignName ?? String(r.campaignId),
+          mkt: p.mkt, currency: p.currency,
+          cost: Number(r.cost ?? 0), sales: Number(r.attributedSales14d ?? 0), orders: Number(r.attributedConversions14d ?? 0),
+          impressions: Number(r.impressions ?? 0), clicks: Number(r.clicks ?? 0),
+        }))
+        downloads++
+      } else if (st.status === "FAILURE") {
+        // drop — will be re-requested if still in the window
+      } else {
+        stillPending.push(p)
+      }
+    } catch { stillPending.push(p) }
+  }
+  sbV2.pending = stillPending
+
+  // 2) Top up requests up to the per-run cap (a slow report no longer blocks backfill).
+  if (activeProfiles.length > 0 && sbV2.pending.length < SB_V2_REQUESTS_PER_RUN) {
+    const dates = windowDatesIso(SB_WINDOW_DAYS)  // recent-first
+    const recentCutoff = dates.slice(0, SB_RECENT_MUTABLE_DAYS)
+    const refreshDue = (now - (sbV2.refreshedAt ?? 0)) > SB_REFRESH_MS
+    const inFlight = new Set(sbV2.pending.map((p) => `${p.mkt}:${p.reportDate}`))
+    let slots = SB_V2_REQUESTS_PER_RUN - sbV2.pending.length
+    let touchedRecent = false
+    for (const prof of activeProfiles) {
+      for (const iso of dates) {
+        if (slots <= 0) break
+        const key = `${prof.mkt}:${iso}`
+        if (inFlight.has(key)) continue
+        const isRecent = recentCutoff.includes(iso)
+        if (sbV2.byDate[key] && !(isRecent && refreshDue)) continue
+        try {
+          const reportId = await requestSbV2Report(iso, prof.profileId, accessToken, clientId)
+          sbV2.pending.push({ reportId, reportDate: iso, profileId: prof.profileId, mkt: prof.mkt, currency: prof.currency, requestedAt: now })
+          inFlight.add(key); slots--
+          if (isRecent) touchedRecent = true
+        } catch { /* throttle/err — retry next run */ }
+      }
+      if (slots <= 0) break
+    }
+    if (refreshDue && touchedRecent) sbV2.refreshedAt = now
+  }
+
+  // 3) Prune cached days outside the window.
+  const keep = new Set(windowDatesIso(SB_WINDOW_DAYS + 2))
+  for (const k of Object.keys(sbV2.byDate)) {
+    const day = k.split(":")[1]
+    if (!keep.has(day)) delete sbV2.byDate[k]
+  }
+
+  ;(sbV2 as any).lastDownloads = downloads
+  return sbV2
+}
+
+// Fold cached SB-v2 daily data into the SP+SD base, producing the combined
+// campaigns/daily/dailyByMkt the frontend reads. Idempotent: always rebuilt
+// from the base + cache, so it never double-counts across syncs.
+function foldSb(
+  base: { campaigns: any[]; daily: any[]; dailyByMkt: any[] },
+  byDate: Record<string, SbV2Row[]>,
+): { campaigns: any[]; daily: any[]; dailyByMkt: any[] } {
+  const sbCamp = new Map<string, any>()
+  const sbDaily = new Map<string, any>()
+  const sbDailyMkt = new Map<string, any>()
+  for (const [key, rows] of Object.entries(byDate ?? {})) {
+    const date = key.split(":")[1]
+    for (const r of rows) {
+      const ck = `SB:${r.campaignId}`
+      const c = sbCamp.get(ck) ?? { campaign: r.campaignName, campaignId: r.campaignId, type: "SB", marketplace: r.mkt, currency: r.currency, impressions: 0, clicks: 0, spend: 0, adSales: 0, orders: 0 }
+      c.impressions += r.impressions; c.clicks += r.clicks; c.spend += r.cost; c.adSales += r.sales; c.orders += r.orders
+      sbCamp.set(ck, c)
+      const d = sbDaily.get(date) ?? { date, spend: 0, adSales: 0, orders: 0, impressions: 0, clicks: 0 }
+      d.spend += r.cost; d.adSales += r.sales; d.orders += r.orders; d.impressions += r.impressions; d.clicks += r.clicks
+      sbDaily.set(date, d)
+      const mk = `${r.mkt}:${date}`
+      const dm = sbDailyMkt.get(mk) ?? { marketplace: r.mkt, date, spend: 0, adSales: 0, orders: 0, impressions: 0, clicks: 0 }
+      dm.spend += r.cost; dm.adSales += r.sales; dm.orders += r.orders; dm.impressions += r.impressions; dm.clicks += r.clicks
+      sbDailyMkt.set(mk, dm)
+    }
+  }
+  const ratios = (c: any) => ({
+    ...c,
+    ctr: c.impressions ? (c.clicks / c.impressions) * 100 : 0,
+    cvr: c.clicks ? (c.orders / c.clicks) * 100 : 0,
+    roas: c.spend > 0 ? c.adSales / c.spend : 0,
+    acos: c.adSales > 0 ? (c.spend / c.adSales) * 100 : 0,
+    cpc: c.clicks > 0 ? c.spend / c.clicks : 0,
+  })
+  const campaigns = [...(base.campaigns ?? []), ...Array.from(sbCamp.values()).map(ratios)]
+  const dailyMap = new Map<string, any>()
+  for (const d of base.daily ?? []) dailyMap.set(d.date, { ...d })
+  for (const [date, s] of sbDaily) {
+    const d = dailyMap.get(date) ?? { date, spend: 0, adSales: 0, orders: 0, impressions: 0, clicks: 0 }
+    d.spend = (d.spend ?? 0) + s.spend; d.adSales = (d.adSales ?? 0) + s.adSales; d.orders = (d.orders ?? 0) + s.orders
+    d.impressions = (d.impressions ?? 0) + s.impressions; d.clicks = (d.clicks ?? 0) + s.clicks
+    dailyMap.set(date, d)
+  }
+  const daily = Array.from(dailyMap.values())
+    .map(d => ({ ...d, ctr: d.impressions ? (d.clicks / d.impressions) * 100 : 0, cvr: d.clicks ? (d.orders / d.clicks) * 100 : 0 }))
+    .sort((a, b) => a.date.localeCompare(b.date))
+  const dmMap = new Map<string, any>()
+  for (const d of base.dailyByMkt ?? []) dmMap.set(`${d.marketplace}:${d.date}`, { ...d })
+  for (const [mk, s] of sbDailyMkt) {
+    const d = dmMap.get(mk) ?? { marketplace: s.marketplace, date: s.date, spend: 0, adSales: 0, orders: 0, impressions: 0, clicks: 0 }
+    d.spend = (d.spend ?? 0) + s.spend; d.adSales = (d.adSales ?? 0) + s.adSales; d.orders = (d.orders ?? 0) + s.orders
+    d.impressions = (d.impressions ?? 0) + s.impressions; d.clicks = (d.clicks ?? 0) + s.clicks
+    dmMap.set(mk, d)
+  }
+  const dailyByMkt = Array.from(dmMap.values())
+    .map(d => ({ ...d, ctr: d.impressions ? (d.clicks / d.impressions) * 100 : 0, cvr: d.clicks ? (d.orders / d.clicks) * 100 : 0 }))
+    .sort((a, b) => a.date.localeCompare(b.date))
+  return { campaigns, daily, dailyByMkt }
 }
 
 function json(body: unknown, status = 200): Response {

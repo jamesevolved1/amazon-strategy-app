@@ -758,13 +758,6 @@ function KPIRow({ totals, prev, ccy }: { totals: ReportingTotals; prev: Reportin
         delta={deltaPct(totals.ctr, prev.ctr)}
       />
       <KPICard
-        label="CVR"
-        tone="mint"
-        icon={<BarIcon className="w-3.5 h-3.5" />}
-        value={percent(totals.cvr, 2)}
-        delta={deltaPct(totals.cvr, prev.cvr)}
-      />
-      <KPICard
         label="CPC"
         tone="gold"
         icon={<Megaphone className="w-3.5 h-3.5" />}
