@@ -11,6 +11,7 @@ export type Status = 'good' | 'warn' | 'bad' | 'none'
 
 export interface Action {
   id: string
+  key: string           // stable signature (kind + campaign) for persisting decisions
   kind: ActionKind
   tone: 'mint' | 'blush' | 'gold' | 'peri'
   campaign: string
@@ -78,6 +79,8 @@ export function buildActionReport(
   const actions: Action[] = []
   let seq = 0
   const id = () => `act-${seq++}`
+  // Inject a stable per-campaign-per-kind key so approve/deny + notes survive re-runs.
+  const add = (a: Omit<Action, 'key'>) => actions.push({ ...a, key: `${a.kind}:${a.campaign}` })
 
   for (const c of live) {
     const spend = c.spend || 0
@@ -88,7 +91,7 @@ export function buildActionReport(
 
     // 1) Zero-sale spend → cut / negate (clearest waste)
     if (adSales <= 0 && clicks >= MIN_CLICKS_DEAD) {
-      actions.push({
+      add({
         id: id(), kind: 'negate', tone: 'blush', campaign: c.campaign, type: c.type,
         headline: 'Cut wasted spend',
         detail: `${fmt(spend)} spent over ${whole(clicks)} clicks with zero sales.`,
@@ -102,7 +105,7 @@ export function buildActionReport(
     // 2) Below the ROAS floor → reduce / restructure
     if (roas > 0 && minRoas > 0 && roas < minRoas) {
       const recoverable = Math.max(0, spend - adSales / minRoas)
-      actions.push({
+      add({
         id: id(), kind: 'reduce', tone: 'blush', campaign: c.campaign, type: c.type,
         headline: 'Reduce / restructure',
         detail: `ROAS ${roas.toFixed(2)}× is below your ${minRoas.toFixed(2)}× floor on ${fmt(spend)} spend.`,
@@ -116,7 +119,7 @@ export function buildActionReport(
     // 3) Beating target ROAS → scale
     if (targetRoas > 0 && roas >= targetRoas) {
       const upside = adSales * 0.25   // rough incremental-revenue proxy for ranking
-      actions.push({
+      add({
         id: id(), kind: 'scale', tone: 'mint', campaign: c.campaign, type: c.type,
         headline: 'Scale up',
         detail: `ROAS ${roas.toFixed(2)}× beats your ${targetRoas.toFixed(2)}× target — there's headroom.`,
@@ -130,7 +133,7 @@ export function buildActionReport(
     // 4) Between floor and target → tune bids toward target
     if (targetRoas > 0 && roas >= minRoas && roas < targetRoas) {
       const toOptimize = Math.max(0, spend - adSales / targetRoas)
-      actions.push({
+      add({
         id: id(), kind: 'fix_bids', tone: 'gold', campaign: c.campaign, type: c.type,
         headline: 'Tune bids',
         detail: `ROAS ${roas.toFixed(2)}× is under your ${targetRoas.toFixed(2)}× target on ${fmt(spend)} spend.`,
@@ -152,7 +155,7 @@ export function buildActionReport(
     if (impr >= LOW_CTR_MIN_IMPR && ctr > 0 && ctr < LOW_CTR) {
       // One move per campaign — don't double-flag something already actioned.
       if (actions.some(a => a.campaign === c.campaign)) continue
-      actions.push({
+      add({
         id: id(), kind: 'low_ctr', tone: 'peri', campaign: c.campaign, type: c.type,
         headline: 'Fix creative / relevance',
         detail: `CTR ${ctr.toFixed(2)}% across ${whole(impr)} impressions — traffic isn't clicking.`,

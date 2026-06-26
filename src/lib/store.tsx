@@ -189,6 +189,9 @@ interface StoreCtx {
   toggleTaskFor: (clientId: string, id: string) => void
   deleteTaskFor: (clientId: string, id: string) => void
   clearPlaybookFor: (clientId: string) => void
+
+  // Action Center approve/deny + notes (keyed by the action's stable signature)
+  setActionDecision: (key: string, patch: { status?: 'approved' | 'denied'; note?: string }) => void
 }
 
 const Ctx = createContext<StoreCtx | null>(null)
@@ -398,6 +401,19 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     updateBundleFor(clientId, b => ({ ...b, optimization: b.optimization.filter(t => !t.templateKey) }))
   }, [updateBundleFor])
 
+  const setActionDecision: StoreCtx['setActionDecision'] = useCallback((key, patch) => {
+    updateBundle(b => {
+      const prev = b.actionDecisions?.[key]
+      const status = 'status' in patch ? patch.status : prev?.status
+      const note = 'note' in patch ? patch.note : prev?.note
+      const map = { ...(b.actionDecisions ?? {}) }
+      // No decision and no note → drop the entry entirely.
+      if (!status && !(note && note.trim())) { delete map[key]; return { ...b, actionDecisions: map } }
+      map[key] = { status, note, decidedAt: new Date().toISOString() }
+      return { ...b, actionDecisions: map }
+    })
+  }, [updateBundle])
+
   const ctx = useMemo<StoreCtx>(() => ({
     state, currentClient, currentBundle, clients,
     supabaseConfigured: isSupabaseConfigured(),
@@ -407,13 +423,15 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     setReport, clearReport, clearAllReports,
     addTask, updateTask, toggleTask, deleteTask,
     addTaskFor, addTasksFor, updateTaskFor, toggleTaskFor, deleteTaskFor, clearPlaybookFor,
+    setActionDecision,
   }), [state, currentClient, currentBundle, clients,
        addClient, renameClient, deleteClient, switchClient, setClientLaunch,
        setGoals,
        addScenario, updateScenario, deleteScenario, setActiveScenario,
        setReport, clearReport, clearAllReports,
        addTask, updateTask, toggleTask, deleteTask,
-       addTaskFor, addTasksFor, toggleTaskFor, deleteTaskFor, clearPlaybookFor])
+       addTaskFor, addTasksFor, toggleTaskFor, deleteTaskFor, clearPlaybookFor,
+       setActionDecision])
 
   return <Ctx.Provider value={ctx}>{children}</Ctx.Provider>
 }

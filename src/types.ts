@@ -165,6 +165,14 @@ export interface OptimizationTask {
   createdAt: string
 }
 
+// Approve/Deny + note a recommended Action Center move. Keyed by the action's
+// stable signature so the decision survives re-runs of the engine.
+export interface ActionDecision {
+  status?: 'approved' | 'denied'   // undefined = not yet decided
+  note?: string
+  decidedAt: string   // ISO
+}
+
 export interface StrategyScorecard {
   currentMonth: StrategyMonth
   priorMonth: StrategyMonth
@@ -206,4 +214,5 @@ export interface ClientBundle {
   activeScenarioId: string | null
   reports: Partial<Record<ReportKey, UploadedReport>>
   optimization: OptimizationTask[]
+  actionDecisions?: Record<string, ActionDecision>  // Action Center approve/deny + notes
 }
