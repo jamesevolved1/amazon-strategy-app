@@ -4,24 +4,23 @@
 // annotated; decisions persist per client. Approved moves push to the
 // Optimization Calendar.
 
-import React, { useMemo, useState } from 'react'
+import React, { useMemo } from 'react'
 import {
-  Zap, TrendingUp, TrendingDown, Ban, SlidersHorizontal, Eye, Lightbulb, Check, X, CalendarPlus, Info,
+  Zap, TrendingUp, TrendingDown, Ban, SlidersHorizontal, Eye, Lightbulb, Check, X, Info,
 } from 'lucide-react'
-import { Panel, EmptyState, Button, cx } from '../components/ui'
+import { Panel, EmptyState, cx } from '../components/ui'
 import { useStore } from '../lib/store'
 import { useClientCampaigns } from '../lib/campaignData'
 import { useSpApiConnections } from '../lib/spapi'
 import { currencyWhole, multiplier, percent, num } from '../lib/format'
 import { buildActionReport, type Action, type ActionKind, type Status } from '../utils/recommendations'
-import type { OptCategory } from '../types'
 
-const KIND_META: Record<ActionKind, { icon: React.ReactNode; category: OptCategory }> = {
-  negate:   { icon: <Ban className="w-4 h-4" />,              category: 'campaign' },
-  reduce:   { icon: <TrendingDown className="w-4 h-4" />,     category: 'bid' },
-  scale:    { icon: <TrendingUp className="w-4 h-4" />,       category: 'bid' },
-  fix_bids: { icon: <SlidersHorizontal className="w-4 h-4" />, category: 'bid' },
-  low_ctr:  { icon: <Eye className="w-4 h-4" />,              category: 'creatives' },
+const KIND_ICON: Record<ActionKind, React.ReactNode> = {
+  negate:   <Ban className="w-4 h-4" />,
+  reduce:   <TrendingDown className="w-4 h-4" />,
+  scale:    <TrendingUp className="w-4 h-4" />,
+  fix_bids: <SlidersHorizontal className="w-4 h-4" />,
+  low_ctr:  <Eye className="w-4 h-4" />,
 }
 
 const TONE_CHIP: Record<Action['tone'], string> = {
@@ -42,10 +41,9 @@ const GROUPS: Array<{ label: string; kinds: ActionKind[] }> = [
 ]
 
 export function ActionCenter() {
-  const { currentClient, currentBundle, addTask, setActionDecision } = useStore()
+  const { currentClient, currentBundle, setActionDecision } = useStore()
   const campaigns = useClientCampaigns()
   const { connections: spapiConnections } = useSpApiConnections()
-  const [addedCount, setAddedCount] = useState<number | null>(null)
 
   const ccy = currentClient?.currency ?? 'USD'
   const fmt = (n: number) => currencyWhole(n, ccy)
@@ -77,24 +75,9 @@ export function ActionCenter() {
   function decide(a: Action, status: 'approved' | 'denied') {
     const cur = decisions[a.key]?.status
     setActionDecision(a.key, { status: cur === status ? undefined : status })
-    setAddedCount(null)
   }
   function saveNote(a: Action, value: string) {
     setActionDecision(a.key, { note: value })
-  }
-  function addApprovedToCalendar() {
-    approved.forEach(a => {
-      const note = decisions[a.key]?.note?.trim()
-      addTask({
-        title: `${a.headline}: ${a.campaign}`.slice(0, 120),
-        detail: `${a.detail} → ${a.move}${note ? `  ·  Note: ${note}` : ''}`,
-        due: todayIso(),
-        completed: false,
-        category: KIND_META[a.kind].category,
-        cadence: 'oneoff',
-      })
-    })
-    setAddedCount(approved.length)
   }
 
   const hasData = campaigns.length > 0
@@ -143,12 +126,7 @@ export function ActionCenter() {
                   <span className="mx-1.5 text-ink-faint">·</span>
                   <span>{pending} pending</span>
                 </div>
-                <div className="flex items-center gap-2">
-                  {addedCount != null && <span className="text-2xs text-[#1f7a4a] inline-flex items-center gap-1"><Check className="w-3.5 h-3.5" /> Added {addedCount} to calendar</span>}
-                  <Button variant="primary" className="!py-1.5 text-xs" icon={<CalendarPlus className="w-3.5 h-3.5" />} disabled={approved.length === 0} onClick={addApprovedToCalendar}>
-                    Add {approved.length || ''} approved to Calendar
-                  </Button>
-                </div>
+                <span className="text-2xs text-ink-faint">Approve the moves you'll run — bulk upload sheet, rollback file &amp; change log coming next.</span>
               </div>
 
               {/* Grouped moves */}
@@ -192,7 +170,7 @@ function ActionRow({ action: a, status, note, onDecide, onNote }: {
     <Panel padding="p-4" className={cx(denied && 'opacity-60', approved && 'ring-1 ring-[#1f7a4a]/25')}>
       <div className="flex items-start gap-3.5">
         <span className={cx('shrink-0 w-9 h-9 rounded-lg flex items-center justify-center', TONE_CHIP[a.tone])}>
-          {KIND_META[a.kind].icon}
+          {KIND_ICON[a.kind]}
         </span>
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
@@ -272,10 +250,6 @@ function buildVerdict(actions: Action[]): string {
   return `${n} move${n === 1 ? '' : 's'} recommended this week. Start with ${top.headline.toLowerCase()} on ${top.campaign} (${top.impactLabel}), then work down — review each, approve or deny, and add notes before you act.`
 }
 
-function todayIso(): string {
-  const d = new Date()
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
-}
 function isoDaysAgo(n: number): string {
   const d = new Date(Date.now() - n * 86_400_000)
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
