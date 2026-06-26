@@ -3,6 +3,7 @@
 
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react'
 import type {
+  ChangeLogEntry,
   Client,
   ClientBundle,
   ClientGoals,
@@ -192,6 +193,9 @@ interface StoreCtx {
 
   // Action Center approve/deny + notes (keyed by the action's stable signature)
   setActionDecision: (key: string, patch: { status?: 'approved' | 'denied'; note?: string }) => void
+
+  // Optimizer change-log (audit trail of exported bid/negation changes)
+  addChangeLogEntries: (entries: ChangeLogEntry[]) => void
 }
 
 const Ctx = createContext<StoreCtx | null>(null)
@@ -414,6 +418,11 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     })
   }, [updateBundle])
 
+  const addChangeLogEntries: StoreCtx['addChangeLogEntries'] = useCallback((entries) => {
+    if (!entries.length) return
+    updateBundle(b => ({ ...b, changeLog: [...entries, ...(b.changeLog ?? [])].slice(0, 500) }))
+  }, [updateBundle])
+
   const ctx = useMemo<StoreCtx>(() => ({
     state, currentClient, currentBundle, clients,
     supabaseConfigured: isSupabaseConfigured(),
@@ -423,7 +432,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     setReport, clearReport, clearAllReports,
     addTask, updateTask, toggleTask, deleteTask,
     addTaskFor, addTasksFor, updateTaskFor, toggleTaskFor, deleteTaskFor, clearPlaybookFor,
-    setActionDecision,
+    setActionDecision, addChangeLogEntries,
   }), [state, currentClient, currentBundle, clients,
        addClient, renameClient, deleteClient, switchClient, setClientLaunch,
        setGoals,
@@ -431,7 +440,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
        setReport, clearReport, clearAllReports,
        addTask, updateTask, toggleTask, deleteTask,
        addTaskFor, addTasksFor, toggleTaskFor, deleteTaskFor, clearPlaybookFor,
-       setActionDecision])
+       setActionDecision, addChangeLogEntries])
 
   return <Ctx.Provider value={ctx}>{children}</Ctx.Provider>
 }

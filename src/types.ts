@@ -173,6 +173,22 @@ export interface ActionDecision {
   decidedAt: string   // ISO
 }
 
+// A bid/negation change exported from the Optimizer — the running audit trail.
+export interface ChangeLogEntry {
+  id: string
+  date: string            // ISO when exported
+  marketplace: string
+  entityKind: 'keyword' | 'target'
+  campaignId: string
+  text: string
+  matchType?: string
+  action: 'raise' | 'lower' | 'negate'
+  fromBid: number
+  toBid: number | null    // null for negate
+  note?: string
+  batchId: string         // groups one export together (matches the reverse file)
+}
+
 export interface StrategyScorecard {
   currentMonth: StrategyMonth
   priorMonth: StrategyMonth
@@ -215,4 +231,5 @@ export interface ClientBundle {
   reports: Partial<Record<ReportKey, UploadedReport>>
   optimization: OptimizationTask[]
   actionDecisions?: Record<string, ActionDecision>  // Action Center approve/deny + notes
+  changeLog?: ChangeLogEntry[]                       // Optimizer export history (newest first)
 }

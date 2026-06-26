@@ -4,6 +4,7 @@ import { AuthGate } from './components/AuthGate'
 import { Sidebar, type PageId } from './components/Sidebar'
 import { ReportingDashboard } from './pages/ReportingDashboard'
 import { ActionCenter } from './pages/ActionCenter'
+import { Optimizer } from './pages/Optimizer'
 import { CampaignManager } from './pages/CampaignManager'
 import { PnLDashboard } from './pages/PnLDashboard'
 import { ParentASIN } from './pages/ParentASIN'
@@ -18,6 +19,7 @@ import { EmptyState, Button } from './components/ui'
 const NAV_LABEL: Record<PageId, string> = {
   reporting: 'Reporting Dashboard',
   actions: 'Action Center',
+  optimizer: 'Optimizer',
   campaigns: 'Campaign Manager',
   pnl: 'P&L Dashboard',
   parent: 'Parent ASIN P&L',
@@ -121,6 +123,7 @@ function PageRouter({ page }: { page: PageId }) {
   switch (page) {
     case 'reporting':    return <ReportingDashboard />
     case 'actions':      return <ActionCenter />
+    case 'optimizer':    return <Optimizer />
     case 'campaigns':    return <CampaignManager />
     case 'pnl':          return <PnLDashboard />
     case 'parent':       return <ParentASIN />
@@ -136,7 +139,7 @@ function PageRouter({ page }: { page: PageId }) {
 function readHash(): PageId {
   const h = (location.hash || '').replace(/^#\/?/, '')
   switch (h) {
-    case 'reporting': case 'actions': case 'campaigns': case 'pnl': case 'parent': case 'adPotential':
+    case 'reporting': case 'actions': case 'optimizer': case 'campaigns': case 'pnl': case 'parent': case 'adPotential':
     case 'performance': case 'optimization': case 'upload': case 'clients': case 'settings':
       return h
     default:
