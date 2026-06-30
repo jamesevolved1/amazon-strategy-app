@@ -3,6 +3,7 @@ import { StoreProvider, useStore } from './lib/store'
 import { AuthGate } from './components/AuthGate'
 import { Sidebar, type PageId } from './components/Sidebar'
 import { ReportingDashboard } from './pages/ReportingDashboard'
+import { DeepDive } from './pages/DeepDive'
 import { ActionCenter } from './pages/ActionCenter'
 import { Optimizer } from './pages/Optimizer'
 import { CampaignManager } from './pages/CampaignManager'
@@ -18,6 +19,7 @@ import { EmptyState, Button } from './components/ui'
 
 const NAV_LABEL: Record<PageId, string> = {
   reporting: 'Reporting Dashboard',
+  deepdive: 'Deep Dive',
   actions: 'Action Center',
   optimizer: 'Optimizer',
   campaigns: 'Campaign Manager',
@@ -122,6 +124,7 @@ function Shell() {
 function PageRouter({ page }: { page: PageId }) {
   switch (page) {
     case 'reporting':    return <ReportingDashboard />
+    case 'deepdive':     return <DeepDive />
     case 'actions':      return <ActionCenter />
     case 'optimizer':    return <Optimizer />
     case 'campaigns':    return <CampaignManager />
@@ -139,7 +142,7 @@ function PageRouter({ page }: { page: PageId }) {
 function readHash(): PageId {
   const h = (location.hash || '').replace(/^#\/?/, '')
   switch (h) {
-    case 'reporting': case 'actions': case 'optimizer': case 'campaigns': case 'pnl': case 'parent': case 'adPotential':
+    case 'reporting': case 'deepdive': case 'actions': case 'optimizer': case 'campaigns': case 'pnl': case 'parent': case 'adPotential':
     case 'performance': case 'optimization': case 'upload': case 'clients': case 'settings':
       return h
     default:

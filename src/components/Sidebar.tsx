@@ -1,13 +1,13 @@
 import React, { useEffect, useState } from 'react'
 import {
-  BarChart3, LineChart, Boxes, Target, ClipboardCheck, CalendarDays, Upload, Users, Settings, Plus, ChevronsUpDown, Check, Trash2, PanelLeftClose, PanelLeftOpen, Megaphone, Zap, Wand2,
+  BarChart3, LineChart, Boxes, Target, ClipboardCheck, CalendarDays, Upload, Users, Settings, Plus, ChevronsUpDown, Check, Trash2, PanelLeftClose, PanelLeftOpen, Megaphone, Zap, Wand2, FileText,
 } from 'lucide-react'
 import { useStore } from '../lib/store'
 import { cx } from './ui'
 import type { Marketplace } from '../types'
 
 export type PageId =
-  | 'reporting' | 'actions' | 'optimizer' | 'campaigns' | 'pnl' | 'parent' | 'adPotential' | 'performance'
+  | 'reporting' | 'deepdive' | 'actions' | 'optimizer' | 'campaigns' | 'pnl' | 'parent' | 'adPotential' | 'performance'
   | 'optimization' | 'upload' | 'clients' | 'settings'
 
 interface Item {
@@ -18,6 +18,7 @@ interface Item {
 
 const NAV: Item[] = [
   { id: 'reporting',    label: 'Reporting Dashboard', icon: <LineChart className="w-4 h-4" /> },
+  { id: 'deepdive',     label: 'Deep Dive',            icon: <FileText className="w-4 h-4" /> },
   { id: 'actions',      label: 'Action Center',        icon: <Zap className="w-4 h-4" /> },
   { id: 'optimizer',    label: 'Optimizer',            icon: <Wand2 className="w-4 h-4" /> },
   { id: 'campaigns',    label: 'Campaign Manager',     icon: <Megaphone className="w-4 h-4" /> },
