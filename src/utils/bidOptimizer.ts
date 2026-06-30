@@ -25,27 +25,34 @@ export interface OptEntity {
   orders: number
 }
 
+// Mirrors the Evolved PART 2.8 config block (James overrides any of these).
 export interface OptSettings {
-  targetRoas: number         // primary lever
-  minCpc: number             // floor for any bid
-  maxCpc: number             // hard ceiling for any bid
-  brandTerms: string[]       // lowercase substrings; protected from cuts/negation
-  minClicksToAct: number     // need this many clicks before changing a bid
-  minClicksToNegate: number  // zero-sale spend needs this many clicks to negate
+  targetRoas: number         // primary lever; target ACoS = 1 ÷ target ROAS
+  minCpc: number             // bid_floor
+  maxCpc: number             // bid_ceiling
+  minSpend: number           // min_spend_for_action ($)
+  brandTerms: string[]       // lowercase substrings; never cut/negate brand terms
+  minClicksToAct: number     // min_clicks_for_action (never act on <10-click data)
+  minClicksToNegate: number  // zero-sale spend needs more than this many clicks to negate
   nudgeFloor: number         // skip bid changes smaller than this ($)
-  safetyCapPct: number       // max single-pass move as a fraction of current bid (e.g. 0.5 = ±50%)
+  safetyCapPct: number       // bid_increment — controlled step toward the RPC target (0.15 = ±15%)
+  roasLowTrigger: number     // lower the bid if observed ROAS < this (1.2)
+  roasHighTrigger: number    // raise the bid if observed ROAS > this (1.9)
 }
 
 export function defaultSettings(targetRoas: number): OptSettings {
   return {
     targetRoas: targetRoas > 0 ? targetRoas : 4,
-    minCpc: 0.15,
+    minCpc: 0.20,
     maxCpc: 5.0,
+    minSpend: 10,
     brandTerms: [],
-    minClicksToAct: 5,
+    minClicksToAct: 10,
     minClicksToNegate: 10,
     nudgeFloor: 0.03,
-    safetyCapPct: 0.5,
+    safetyCapPct: 0.15,
+    roasLowTrigger: 1.2,
+    roasHighTrigger: 1.9,
   }
 }
 
@@ -98,23 +105,30 @@ export function optimizeBids(entities: OptEntity[], settings: OptSettings): OptR
     const rpc = clicks > 0 ? (sales / clicks) / s.targetRoas : 0
     const isBrand = s.brandTerms.length > 0 && s.brandTerms.some(t => e.text.toLowerCase().includes(t))
 
-    // Zero-sale spend → negate (never auto-negate a brand term).
-    if (sales <= 0 && clicks >= s.minClicksToNegate) {
+    // Negate zero-sale spend (Evolved 2.8: spend > min, clicks > threshold, 0 orders).
+    // Never auto-negate a brand term — brand stays defended.
+    if (sales <= 0 && clicks > s.minClicksToNegate && cost > s.minSpend) {
       if (isBrand) continue
       changes.push(mk(e, 'negate', bid, null, 0, roas, rpc, isBrand,
-        `${money(cost)} over ${clicks} clicks, no sales`))
+        `${money(cost)} over ${clicks} clicks, no sales — pause`))
       considered++
       continue
     }
 
-    if (clicks < s.minClicksToAct) continue
+    // Need enough data + spend to touch a bid (never act on <10-click data).
+    if (clicks < s.minClicksToAct || cost < s.minSpend) continue
     considered++
 
-    // RPC target, clamped to CPC guardrails, then to the single-pass safety cap.
+    // ROAS deadband — hold inside [low, high]; only move clear winners/losers (2.8).
+    if (roas >= s.roasLowTrigger && roas <= s.roasHighTrigger) continue
+
+    // Step ±safetyCap (the controlled increment) toward the RPC destination, then
+    // clamp to the CPC floor/ceiling. target_bid is the destination; ±15% is the step.
     const target = clamp(rpc, s.minCpc, s.maxCpc)
-    const capUp = bid * (1 + s.safetyCapPct)
-    const capDown = bid * (1 - s.safetyCapPct)
-    let newBid = round2(clamp(target, capDown, capUp))
+    let newBid = roas < s.roasLowTrigger
+      ? Math.max(target, bid * (1 - s.safetyCapPct))   // losing → step down toward target
+      : Math.min(target, bid * (1 + s.safetyCapPct))   // winning → step up toward target
+    newBid = round2(clamp(newBid, s.minCpc, s.maxCpc))
 
     // Brand protection: never lower a brand term below its current bid.
     if (isBrand && newBid < bid) continue
@@ -122,12 +136,12 @@ export function optimizeBids(entities: OptEntity[], settings: OptSettings): OptR
     const delta = newBid - bid
     if (Math.abs(delta) < s.nudgeFloor) continue   // hold — change too small to bother
 
-    const deltaPct = bid > 0 ? delta / bid : 0
+    const step = Math.round(s.safetyCapPct * 100)
     const action: BidAction = delta > 0 ? 'raise' : 'lower'
     const reason = action === 'raise'
-      ? `ROAS ${roas.toFixed(1)}× — underbid vs RPC target ${money(rpc)}`
-      : `ROAS ${roas.toFixed(1)}× — overbid vs RPC target ${money(rpc)}`
-    changes.push(mk(e, action, bid, newBid, deltaPct, roas, rpc, isBrand, reason))
+      ? `ROAS ${roas.toFixed(1)}× > ${s.roasHighTrigger}× — +${step}% toward RPC ${money(rpc)}`
+      : `ROAS ${roas.toFixed(1)}× < ${s.roasLowTrigger}× — −${step}% toward RPC ${money(rpc)}`
+    changes.push(mk(e, action, bid, newBid, bid > 0 ? delta / bid : 0, roas, rpc, isBrand, reason))
   }
 
   changes.sort((a, b) => b.cost - a.cost)

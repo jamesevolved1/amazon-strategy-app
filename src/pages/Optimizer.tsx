@@ -119,18 +119,28 @@ export function Optimizer() {
 
       {phase === 'ready' && (
         <>
-          {/* Settings */}
+          {/* Settings — the Evolved PART 2.8 config block (every value is overridable here). */}
           <Panel>
-            <div className="grid grid-cols-2 lg:grid-cols-5 gap-3 items-end">
+            <div className="flex items-center justify-between mb-3">
+              <span className="text-xs font-semibold text-ink">Rules &amp; thresholds</span>
+              <span className="text-2xs text-ink-faint">Evolved PPC methodology · §2.8 — override any value</span>
+            </div>
+            <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 items-end">
               <NumberField label="Target ROAS" value={settings.targetRoas} onChange={v => setSettings(s => ({ ...s, targetRoas: v }))} step="0.1" suffix="×" />
-              <NumberField label="Min CPC" value={settings.minCpc} onChange={v => setSettings(s => ({ ...s, minCpc: v }))} step="0.05" prefix="$" />
-              <NumberField label="Max CPC" value={settings.maxCpc} onChange={v => setSettings(s => ({ ...s, maxCpc: v }))} step="0.25" prefix="$" />
-              <NumberField label="Safety cap" value={Math.round(settings.safetyCapPct * 100)} onChange={v => setSettings(s => ({ ...s, safetyCapPct: v / 100 }))} step="5" suffix="%" />
+              <NumberField label="Min CPC (floor)" value={settings.minCpc} onChange={v => setSettings(s => ({ ...s, minCpc: v }))} step="0.05" prefix="$" />
+              <NumberField label="Max CPC (ceiling)" value={settings.maxCpc} onChange={v => setSettings(s => ({ ...s, maxCpc: v }))} step="0.25" prefix="$" />
+              <NumberField label="Step size" value={Math.round(settings.safetyCapPct * 100)} onChange={v => setSettings(s => ({ ...s, safetyCapPct: v / 100 }))} step="5" suffix="%" />
+              <NumberField label="Min spend to act" value={settings.minSpend} onChange={v => setSettings(s => ({ ...s, minSpend: v }))} step="1" prefix="$" />
+              <NumberField label="Lower if ROAS <" value={settings.roasLowTrigger} onChange={v => setSettings(s => ({ ...s, roasLowTrigger: v }))} step="0.1" suffix="×" />
+              <NumberField label="Raise if ROAS >" value={settings.roasHighTrigger} onChange={v => setSettings(s => ({ ...s, roasHighTrigger: v }))} step="0.1" suffix="×" />
               <label className="block">
                 <span className="block text-xs font-medium text-ink-mute mb-1.5">Brand terms (protected)</span>
                 <input value={brandText} onChange={e => setBrandText(e.target.value)} placeholder="red land, lands, rlc" className="w-full rounded-lg border border-line bg-canvas-panel text-sm text-ink px-3 py-2 focus:outline-none focus:ring-2 focus:ring-ink/15" />
               </label>
             </div>
+            <p className="text-2xs text-ink-faint mt-2.5">
+              ROAS {settings.roasLowTrigger}×–{settings.roasHighTrigger}× holds (no change). Outside the band, bids step ±{Math.round(settings.safetyCapPct * 100)}% toward the RPC target = (sales ÷ clicks) ÷ target ROAS, clamped to the CPC floor/ceiling. Zero-sale keywords past {settings.minClicksToNegate} clicks / {`$${settings.minSpend}`} spend are flagged to pause. Brand terms are never cut or paused.
+            </p>
             {meta?.capped && <p className="text-2xs text-[#8b6a18] mt-2">Note: this account has a very large keyword count — some low-traffic keywords beyond the pull limit were skipped.</p>}
           </Panel>
 
