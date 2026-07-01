@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react'
 import {
-  BarChart3, LineChart, Boxes, Target, ClipboardCheck, CalendarDays, Upload, Users, Settings, Plus, ChevronsUpDown, Check, Trash2, PanelLeftClose, PanelLeftOpen, Megaphone, Zap, Wand2, FileText,
+  BarChart3, LineChart, Boxes, Target, ClipboardCheck, CalendarDays, ShieldCheck, Upload, Users, Settings, Plus, ChevronsUpDown, Check, Trash2, PanelLeftClose, PanelLeftOpen, Megaphone, Zap, Wand2, FileText,
 } from 'lucide-react'
 import { useStore } from '../lib/store'
 import { cx } from './ui'
@@ -8,7 +8,7 @@ import type { Marketplace } from '../types'
 
 export type PageId =
   | 'reporting' | 'deepdive' | 'actions' | 'optimizer' | 'campaigns' | 'pnl' | 'parent' | 'adPotential' | 'performance'
-  | 'optimization' | 'upload' | 'clients' | 'settings'
+  | 'optimization' | 'audit' | 'upload' | 'clients' | 'settings'
 
 interface Item {
   id: PageId
@@ -27,6 +27,7 @@ const NAV: Item[] = [
   { id: 'adPotential',  label: 'Ad Potential',         icon: <Target className="w-4 h-4" /> },
   { id: 'performance',  label: 'Performance Review',   icon: <ClipboardCheck className="w-4 h-4" /> },
   { id: 'optimization', label: 'Optimization Calendar', icon: <CalendarDays className="w-4 h-4" /> },
+  { id: 'audit',        label: 'PPC Audit',             icon: <ShieldCheck className="w-4 h-4" /> },
   { id: 'upload',       label: 'Upload Reports',        icon: <Upload className="w-4 h-4" /> },
   { id: 'clients',      label: 'Clients',               icon: <Users className="w-4 h-4" /> },
   { id: 'settings',     label: 'Settings',              icon: <Settings className="w-4 h-4" /> },

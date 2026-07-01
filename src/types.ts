@@ -46,6 +46,12 @@ export type ReportKey =
   | 'cogsMapping'
   | 'strategyDoc'
   | 'optimizationSchedule'
+  // PPC audit engine sources (Evolved deep-dive intake gate):
+  | 'searchTerm'
+  | 'targeting'
+  | 'placement'
+  | 'bulkStructure'
+  | 'restock'
 
 export interface UploadedReport {
   key: ReportKey
@@ -143,6 +149,98 @@ export interface DailySeriesPoint {
   organicSales?: number
   cvr?: number      // %
   ctr?: number      // %
+}
+
+// ---------- PPC audit engine report rows ----------
+
+/** One row of the SP Search Term report (Customer Search Term level). */
+export interface SearchTermRow {
+  campaignName: string
+  adGroupName: string
+  targeting: string        // the keyword/expression the term matched against
+  matchType: string        // BROAD | PHRASE | EXACT | auto group ("close-match" etc.)
+  searchTerm: string
+  impressions: number
+  clicks: number
+  spend: number
+  sales: number
+  orders: number
+  ctr: number   // %
+  cpc: number
+  roas: number  // x
+  acos: number  // %
+}
+
+/** One row of the SP Targeting report (keyword/PT expression level). */
+export interface TargetingRow {
+  campaignName: string
+  adGroupName: string
+  targeting: string
+  matchType: string
+  impressions: number
+  clicks: number
+  spend: number
+  sales: number
+  orders: number
+  cpc: number
+  roas: number
+  acos: number
+}
+
+/** One row of the SP Placement report (campaign × placement). */
+export interface PlacementRow {
+  campaignName: string
+  placement: string        // 'Top of Search' | 'Rest of Search' | 'Product Pages' | raw label
+  biddingStrategy: string
+  impressions: number
+  clicks: number
+  spend: number
+  sales: number
+  orders: number
+  cpc: number
+  roas: number
+}
+
+/** One entity row from the "Sponsored Products Campaigns" bulk-operations sheet.
+ *  This is the STRUCTURE view (bids, match types, negatives, budgets, IDs) —
+ *  distinct from parseBulkCampaigns which reads campaign performance. */
+export interface BulkEntityRow {
+  entity:
+    | 'Campaign' | 'Ad Group' | 'Product Ad' | 'Keyword' | 'Negative Keyword'
+    | 'Campaign Negative Keyword' | 'Product Targeting' | 'Negative Product Targeting'
+    | 'Bidding Adjustment' | string
+  operation?: string
+  campaignId: string
+  campaignName: string
+  adGroupId?: string
+  adGroupName?: string
+  portfolioId?: string
+  state?: string
+  dailyBudget?: number
+  targetingType?: 'AUTO' | 'MANUAL' | string
+  biddingStrategy?: string
+  placement?: string
+  percentage?: number
+  keywordId?: string
+  keywordText?: string
+  matchType?: string
+  productTargetingId?: string
+  productTargetingExpression?: string
+  sku?: string
+  asin?: string
+  bid?: number
+  adGroupDefaultBid?: number
+}
+
+/** One row of the Restock Recommendations report. */
+export interface RestockRow {
+  sku: string
+  asin?: string
+  productName?: string
+  available: number
+  daysOfSupply?: number
+  recommendedShipQty?: number
+  alert?: string
 }
 
 export type OptCategory = 'bid' | 'campaign' | 'creatives' | 'seo' | 'additional'

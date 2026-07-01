@@ -515,3 +515,227 @@ export async function parseOptimizationSchedule(file: File): Promise<ParseResult
   if (tasks.length === 0) warnings.push('Optimization schedule needs at minimum Task + Due columns.')
   return { data: { tasks }, warnings, rowCount: tasks.length }
 }
+
+// ═══════════════ PPC Audit engine report parsers ═══════════════
+
+// ---------- SP Search Term Report ----------
+
+export interface SearchTermData {
+  rows: import('../types').SearchTermRow[]
+  /** Rows dropped by the storage guard (zero-click rows). */
+  droppedZeroClick: number
+}
+
+export async function parseSearchTerm(file: File): Promise<ParseResult<SearchTermData>> {
+  const wb = await readWorkbook(file)
+  const warnings: string[] = []
+  const ws =
+    findSheet(wb, ['Sponsored Products Search Term Report', 'Sponsored Product Search Term R', 'Search Term Report', 'SP Search Term', 'Search Terms', 'Sheet1']) ??
+    wb.Sheets[wb.SheetNames[0]]
+  if (!ws) return { data: { rows: [], droppedZeroClick: 0 }, warnings: ['Workbook contains no sheets.'], rowCount: 0 }
+
+  const raw = sheetToJson(ws)
+  const out: SearchTermData['rows'] = []
+  let droppedZeroClick = 0
+
+  for (const r of raw) {
+    const searchTerm = toStr(pick(r, ['Customer Search Term', 'Search Term', 'Query']))
+    const campaignName = toStr(pick(r, ['Campaign Name', 'Campaign']))
+    if (!searchTerm || !campaignName) continue
+
+    const clicks = toNumber(pick(r, ['Clicks']))
+    const orders = toNumber(pick(r, ['7 Day Total Orders (#)', '14 Day Total Orders (#)', 'Orders', 'Total Orders']))
+    // Storage guard: zero-click zero-order rows dominate the file but carry no
+    // audit signal (they can't trigger any threshold rule). Drop them so a
+    // 30-day report fits in localStorage.
+    if (clicks === 0 && orders === 0) { droppedZeroClick++; continue }
+
+    const impressions = toNumber(pick(r, ['Impressions']))
+    const spend = toNumber(pick(r, ['Spend', 'Cost']))
+    const sales = toNumber(pick(r, ['7 Day Total Sales', '14 Day Total Sales', 'Sales', 'Total Sales']))
+    out.push({
+      campaignName,
+      adGroupName: toStr(pick(r, ['Ad Group Name', 'Ad Group'])),
+      targeting: toStr(pick(r, ['Targeting', 'Keyword', 'Keyword or Product Targeting'])),
+      matchType: toStr(pick(r, ['Match Type', 'Matched Type'])),
+      searchTerm,
+      impressions, clicks, spend, sales, orders,
+      ctr: impressions > 0 ? (clicks / impressions) * 100 : 0,
+      cpc: clicks > 0 ? spend / clicks : 0,
+      roas: spend > 0 ? sales / spend : 0,
+      acos: sales > 0 ? (spend / sales) * 100 : 0,
+    })
+  }
+
+  if (out.length === 0) warnings.push('No search term rows recognized. Expect columns like Customer Search Term, Campaign Name, Clicks, Spend, 7 Day Total Sales.')
+  else if (droppedZeroClick > 0) warnings.push(`${droppedZeroClick} zero-click rows dropped to keep storage small (no audit signal lost).`)
+  return { data: { rows: out, droppedZeroClick }, warnings, rowCount: out.length }
+}
+
+// ---------- SP Targeting Report ----------
+
+export interface TargetingData {
+  rows: import('../types').TargetingRow[]
+}
+
+export async function parseTargeting(file: File): Promise<ParseResult<TargetingData>> {
+  const wb = await readWorkbook(file)
+  const warnings: string[] = []
+  const ws =
+    findSheet(wb, ['Sponsored Products Targeting Report', 'Targeting Report', 'SP Targeting', 'Targeting', 'Sheet1']) ??
+    wb.Sheets[wb.SheetNames[0]]
+  if (!ws) return { data: { rows: [] }, warnings: ['Workbook contains no sheets.'], rowCount: 0 }
+
+  const raw = sheetToJson(ws)
+  const out: TargetingData['rows'] = []
+  for (const r of raw) {
+    const targeting = toStr(pick(r, ['Targeting', 'Keyword', 'Keyword or Product Targeting', 'Targeting Expression']))
+    const campaignName = toStr(pick(r, ['Campaign Name', 'Campaign']))
+    if (!targeting || !campaignName) continue
+    const impressions = toNumber(pick(r, ['Impressions']))
+    const clicks = toNumber(pick(r, ['Clicks']))
+    const spend = toNumber(pick(r, ['Spend', 'Cost']))
+    const sales = toNumber(pick(r, ['7 Day Total Sales', '14 Day Total Sales', 'Sales', 'Total Sales']))
+    const orders = toNumber(pick(r, ['7 Day Total Orders (#)', '14 Day Total Orders (#)', 'Orders', 'Total Orders']))
+    out.push({
+      campaignName,
+      adGroupName: toStr(pick(r, ['Ad Group Name', 'Ad Group'])),
+      targeting,
+      matchType: toStr(pick(r, ['Match Type', 'Matched Type'])),
+      impressions, clicks, spend, sales, orders,
+      cpc: clicks > 0 ? spend / clicks : 0,
+      roas: spend > 0 ? sales / spend : 0,
+      acos: sales > 0 ? (spend / sales) * 100 : 0,
+    })
+  }
+  if (out.length === 0) warnings.push('No targeting rows recognized. Expect columns like Targeting, Match Type, Campaign Name, Clicks, Spend.')
+  return { data: { rows: out }, warnings, rowCount: out.length }
+}
+
+// ---------- SP Placement Report ----------
+
+export interface PlacementData {
+  rows: import('../types').PlacementRow[]
+}
+
+export async function parsePlacement(file: File): Promise<ParseResult<PlacementData>> {
+  const wb = await readWorkbook(file)
+  const warnings: string[] = []
+  const ws =
+    findSheet(wb, ['Sponsored Products Placement Report', 'Placement Report', 'SP Placement', 'Placement', 'Sheet1']) ??
+    wb.Sheets[wb.SheetNames[0]]
+  if (!ws) return { data: { rows: [] }, warnings: ['Workbook contains no sheets.'], rowCount: 0 }
+
+  const raw = sheetToJson(ws)
+  const out: PlacementData['rows'] = []
+  for (const r of raw) {
+    const campaignName = toStr(pick(r, ['Campaign Name', 'Campaign']))
+    const placement = toStr(pick(r, ['Placement', 'Placement Type']))
+    if (!campaignName || !placement) continue
+    const impressions = toNumber(pick(r, ['Impressions']))
+    const clicks = toNumber(pick(r, ['Clicks']))
+    const spend = toNumber(pick(r, ['Spend', 'Cost']))
+    const sales = toNumber(pick(r, ['7 Day Total Sales', '14 Day Total Sales', 'Sales', 'Total Sales']))
+    const orders = toNumber(pick(r, ['7 Day Total Orders (#)', '14 Day Total Orders (#)', 'Orders', 'Total Orders']))
+    out.push({
+      campaignName, placement,
+      biddingStrategy: toStr(pick(r, ['Bidding Strategy', 'Bidding strategy', 'Campaign Bidding Strategy'])),
+      impressions, clicks, spend, sales, orders,
+      cpc: clicks > 0 ? spend / clicks : 0,
+      roas: spend > 0 ? sales / spend : 0,
+    })
+  }
+  if (out.length === 0) warnings.push('No placement rows recognized. Expect columns like Campaign Name, Placement, Clicks, Spend.')
+  return { data: { rows: out }, warnings, rowCount: out.length }
+}
+
+// ---------- Bulk Operations STRUCTURE (entities, bids, negatives, budgets) ----------
+
+export interface BulkStructureData {
+  rows: import('../types').BulkEntityRow[]
+}
+
+export async function parseBulkStructure(file: File): Promise<ParseResult<BulkStructureData>> {
+  const wb = await readWorkbook(file)
+  const warnings: string[] = []
+  const ws = findSheet(wb, ['Sponsored Products Campaigns', 'SP Campaigns'])
+  if (!ws) {
+    return {
+      data: { rows: [] },
+      warnings: ['No "Sponsored Products Campaigns" sheet found — upload the full bulk operations export (not a performance report).'],
+      rowCount: 0,
+    }
+  }
+
+  const raw = sheetToJson(ws)
+  const out: BulkStructureData['rows'] = []
+  for (const r of raw) {
+    const entity = toStr(pick(r, ['Entity', 'Record Type']))
+    const campaignName = toStr(pick(r, ['Campaign Name', 'Campaign', 'Campaign Name (Informational only)']))
+    if (!entity || !campaignName) continue
+    const num = (keys: string[]) => {
+      const v = pick(r, keys)
+      return v === undefined || v === null || v === '' ? undefined : toNumber(v)
+    }
+    out.push({
+      entity,
+      operation: toStr(pick(r, ['Operation'])) || undefined,
+      campaignId: toStr(pick(r, ['Campaign ID', 'CampaignId', 'Campaign Id'])),
+      campaignName,
+      adGroupId: toStr(pick(r, ['Ad Group ID', 'AdGroupId', 'Ad Group Id'])) || undefined,
+      adGroupName: toStr(pick(r, ['Ad Group Name', 'Ad Group Name (Informational only)', 'Ad Group'])) || undefined,
+      portfolioId: toStr(pick(r, ['Portfolio ID', 'PortfolioId'])) || undefined,
+      state: toStr(pick(r, ['State'])) || undefined,
+      dailyBudget: num(['Daily Budget', 'Budget']),
+      targetingType: toStr(pick(r, ['Targeting Type'])) || undefined,
+      biddingStrategy: toStr(pick(r, ['Bidding Strategy'])) || undefined,
+      placement: toStr(pick(r, ['Placement'])) || undefined,
+      percentage: num(['Percentage']),
+      keywordId: toStr(pick(r, ['Keyword ID', 'KeywordId'])) || undefined,
+      keywordText: toStr(pick(r, ['Keyword Text', 'Keyword'])) || undefined,
+      matchType: toStr(pick(r, ['Match Type'])) || undefined,
+      productTargetingId: toStr(pick(r, ['Product Targeting ID', 'ProductTargetingId'])) || undefined,
+      productTargetingExpression: toStr(pick(r, ['Product Targeting Expression', 'Resolved Product Targeting Expression (Informational only)'])) || undefined,
+      sku: toStr(pick(r, ['SKU'])) || undefined,
+      asin: toStr(pick(r, ['ASIN', 'ASIN (Informational only)'])) || undefined,
+      bid: num(['Bid']),
+      adGroupDefaultBid: num(['Ad Group Default Bid', 'Ad Group Default Bid (Informational only)']),
+    })
+  }
+
+  if (out.length === 0) warnings.push('No entity rows recognized on the Sponsored Products Campaigns sheet.')
+  const hasIds = out.some(r => r.campaignId)
+  if (out.length > 0 && !hasIds) warnings.push('Campaign IDs missing — bulk-file exports of approved changes will need manual ID mapping.')
+  return { data: { rows: out }, warnings, rowCount: out.length }
+}
+
+// ---------- Restock Recommendations ----------
+
+export interface RestockData {
+  rows: import('../types').RestockRow[]
+}
+
+export async function parseRestock(file: File): Promise<ParseResult<RestockData>> {
+  const wb = await readWorkbook(file)
+  const warnings: string[] = []
+  const ws = wb.Sheets[wb.SheetNames[0]]
+  if (!ws) return { data: { rows: [] }, warnings: ['Empty file.'], rowCount: 0 }
+
+  const raw = sheetToJson(ws)
+  const out: RestockData['rows'] = []
+  for (const r of raw) {
+    const sku = toStr(pick(r, ['SKU', 'Merchant SKU', 'MSKU', 'Seller SKU']))
+    if (!sku) continue
+    out.push({
+      sku,
+      asin: toStr(pick(r, ['ASIN'])) || undefined,
+      productName: toStr(pick(r, ['Product Name', 'Title', 'Item Name'])) || undefined,
+      available: toNumber(pick(r, ['Available', 'Available Quantity', 'Total Units', 'Inventory Level'])),
+      daysOfSupply: toNumber(pick(r, ['Days of Supply', 'Days of Supply (incl. units from open shipments)', 'Weeks of Cover'])) || undefined,
+      recommendedShipQty: toNumber(pick(r, ['Recommended ship quantity', 'Recommended Ship Qty', 'Recommended Replenishment Qty'])) || undefined,
+      alert: toStr(pick(r, ['Alert', 'Alerts', 'Recommendation'])) || undefined,
+    })
+  }
+  if (out.length === 0) warnings.push('No restock rows recognized. Expect columns like SKU, Available, Days of Supply.')
+  return { data: { rows: out }, warnings, rowCount: out.length }
+}

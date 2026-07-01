@@ -12,6 +12,7 @@ import { ParentASIN } from './pages/ParentASIN'
 import { AdPotential } from './pages/AdPotential'
 import { PerformanceReview } from './pages/PerformanceReview'
 import { OptimizationCalendar } from './pages/OptimizationCalendar'
+import { PpcAudit } from './pages/PpcAudit'
 import { UploadReports } from './pages/UploadReports'
 import { Clients } from './pages/Clients'
 import { Settings } from './pages/Settings'
@@ -28,6 +29,7 @@ const NAV_LABEL: Record<PageId, string> = {
   adPotential: 'Ad Potential',
   performance: 'Performance Review',
   optimization: 'Optimization Calendar',
+  audit: 'PPC Audit',
   upload: 'Upload Reports',
   clients: 'Clients',
   settings: 'Settings',
@@ -133,6 +135,7 @@ function PageRouter({ page }: { page: PageId }) {
     case 'adPotential':  return <AdPotential />
     case 'performance':  return <PerformanceReview />
     case 'optimization': return <OptimizationCalendar />
+    case 'audit':        return <PpcAudit />
     case 'upload':       return <UploadReports />
     case 'clients':      return <Clients />
     case 'settings':     return <Settings />
@@ -143,7 +146,7 @@ function readHash(): PageId {
   const h = (location.hash || '').replace(/^#\/?/, '')
   switch (h) {
     case 'reporting': case 'deepdive': case 'actions': case 'optimizer': case 'campaigns': case 'pnl': case 'parent': case 'adPotential':
-    case 'performance': case 'optimization': case 'upload': case 'clients': case 'settings':
+    case 'performance': case 'optimization': case 'audit': case 'upload': case 'clients': case 'settings':
       return h
     default:
       return 'reporting'

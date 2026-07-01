@@ -655,7 +655,7 @@ function AccountHeader({
         </div>
       </div>
       <div className="flex items-center gap-2">
-        <Pill tone="gold" className="px-3 py-1">
+        <Pill tone="mint" className="px-3 py-1">
           <PlayCircle className="w-3 h-3" />
           Presentation ON
         </Pill>

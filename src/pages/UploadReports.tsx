@@ -4,8 +4,9 @@ import { Panel, Pill, Button, EmptyState, cx, Spinner } from '../components/ui'
 import { useStore } from '../lib/store'
 import { relativeTime } from '../lib/format'
 import {
-  parseAdvertisedProduct, parseBulkCampaigns, parseBusinessReport, parseCogsMapping,
-  parseFeePreview, parseMasterProfit, parseOptimizationSchedule, parseStorageFee, parseStrategyDoc,
+  parseAdvertisedProduct, parseBulkCampaigns, parseBulkStructure, parseBusinessReport, parseCogsMapping,
+  parseFeePreview, parseMasterProfit, parseOptimizationSchedule, parsePlacement, parseRestock,
+  parseSearchTerm, parseStorageFee, parseStrategyDoc, parseTargeting,
   type ParseResult,
 } from '../utils/parsers'
 import type { ReportKey } from '../types'
@@ -28,6 +29,16 @@ const TILES: ReportTile[] = [
   { key: 'cogsMapping',          title: 'COGS Mapping',             blurb: 'SKU → unit cost. Used when Master Profit lacks COGS.', parser: parseCogsMapping, required: false },
   { key: 'strategyDoc',          title: 'Client Strategy Doc · Report tab', blurb: 'Daily totals feeding the Performance Review scorecard.', parser: parseStrategyDoc, required: false },
   { key: 'optimizationSchedule', title: 'Optimization Schedule CSV', blurb: 'Scheduled tasks to import into the Optimization Calendar.', parser: parseOptimizationSchedule, required: false },
+]
+
+// PPC Audit intake-gate sources — required tiers are enforced by the audit
+// gate itself (see src/audit/gate.ts), not by this page's required counter.
+const AUDIT_TILES: ReportTile[] = [
+  { key: 'searchTerm',    title: 'SP Search Term Report',      blurb: 'Customer search terms — feeds harvest & negative mining.', parser: parseSearchTerm, required: false },
+  { key: 'targeting',     title: 'SP Targeting Report',        blurb: 'Keyword/PT performance — feeds bid rules.', parser: parseTargeting, required: false },
+  { key: 'placement',     title: 'SP Placement Report',        blurb: 'Top of Search / Rest of Search / Product Pages splits.', parser: parsePlacement, required: false },
+  { key: 'bulkStructure', title: 'Bulk Operations Export',     blurb: 'Full SP structure: entities, bids, match types, negatives, IDs.', parser: parseBulkStructure, required: false },
+  { key: 'restock',       title: 'Restock Recommendations',    blurb: 'Inventory position — gates aggressive scale recommendations.', parser: parseRestock, required: false },
 ]
 
 export function UploadReports() {
@@ -97,6 +108,30 @@ export function UploadReports() {
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
         {TILES.map(tile => {
+          const r = currentBundle.reports[tile.key]
+          return (
+            <Tile
+              key={tile.key}
+              tile={tile}
+              report={r}
+              busy={busyKey === tile.key}
+              onUpload={(f) => upload(tile, f)}
+              onClear={() => clearReport(tile.key)}
+            />
+          )
+        })}
+      </div>
+
+      <header className="pt-2">
+        <h2 className="text-base font-semibold text-ink">PPC Audit reports</h2>
+        <p className="text-xs text-ink-mute mt-0.5">
+          Sources for the deep-dive intake gate. The <a className="text-[#3b48a5] hover:underline" href="#/audit">PPC Audit page</a> shows
+          exactly what's still missing and what each report unlocks.
+        </p>
+      </header>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+        {AUDIT_TILES.map(tile => {
           const r = currentBundle.reports[tile.key]
           return (
             <Tile
