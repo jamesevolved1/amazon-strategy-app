@@ -182,6 +182,13 @@ async function syncOne(
   // Track which to keep in pending vs remove
   const stillPending: PendingReport[] = []
   for (const p of pending) {
+    // PPC-audit reports (search term / targeting / placement) belong to the
+    // cron pipeline — preserve them untouched; ingesting them here would
+    // pollute the campaign dataset with keyword-level rows.
+    if ((p as any).kind === 'audit') {
+      stillPending.push(p)
+      continue
+    }
     if (downloads >= MAX_DOWNLOADS_PER_RUN) {
       stillPending.push(p)
       continue
@@ -303,17 +310,21 @@ async function syncOne(
     synced.dailyByMkt = folded.dailyByMkt
   }
 
-  // 5. If no pending reports left, request a fresh batch
+  // 5. If no pending reports left, request a fresh batch. Audit-kind entries
+  // (owned by the cron pipeline) are excluded from the counts so a lingering
+  // audit report never blocks fresh campaign reports.
   let newPending: PendingReport[] = []
   let requestErrors: string[] = []
-  if (stillPending.length === 0 && downloads === 0 && pending.length === 0) {
+  const nonAuditStill = stillPending.filter(p => (p as any).kind !== 'audit')
+  const nonAuditPending = pending.filter(p => (p as any).kind !== 'audit')
+  if (nonAuditStill.length === 0 && downloads === 0 && nonAuditPending.length === 0) {
     const r = await requestFreshReports(profileIds, accessToken, adsClientId)
     newPending = r.pending
     requestErrors = r.errors
   }
 
   const finalPending = [...stillPending, ...newPending]
-  const allDone = finalPending.length === 0 && ingestedRows.length > 0
+  const allDone = finalPending.filter(p => (p as any).kind !== 'audit').length === 0 && ingestedRows.length > 0
 
   // Surface report-request failures: if we tried to request reports and got
   // nothing back, store the reasons so they show up in the UI / diagnostics.

@@ -59,20 +59,44 @@ function meta(r: UploadedReport | undefined): SourceMeta | undefined {
   }
 }
 
-export function buildAuditInputs(bundle: ClientBundle): AuditInputs {
+/** Live-synced Amazon Ads data for the client (from useAmazonConnections). */
+export interface LiveSyncedData {
+  campaigns?: unknown[]
+  daily?: unknown[]
+  audit?: Partial<Record<'searchTerm' | 'targeting' | 'placement', {
+    window: { start: string; end: string }
+    updatedAt: string
+    rows: unknown[]
+  }>>
+  syncedAt?: string | null
+}
+
+function liveMeta(label: string, rows: number, updatedAt?: string | null): SourceMeta {
+  return { kind: 'liveSync', label, rowCount: rows, uploadedAt: updatedAt ?? undefined }
+}
+
+export function buildAuditInputs(bundle: ClientBundle, live?: LiveSyncedData | null): AuditInputs {
   const reports = bundle.reports
   const sources: AuditInputs['sources'] = {}
 
-  // Campaign performance + daily series from the bulk campaign export.
+  // Campaign performance + daily series: bulk campaign export upload wins;
+  // live Amazon Ads sync fills the slot otherwise.
   const bulk = reports.bulkCampaigns?.parsed as BulkCampaignData | undefined
-  const campaigns = bulk?.campaigns ?? null
+  let campaigns = bulk?.campaigns ?? null
   if (campaigns) sources.campaigns = meta(reports.bulkCampaigns)
+  else if (live?.campaigns?.length) {
+    campaigns = live.campaigns as CampaignRow[]
+    sources.campaigns = liveMeta('Amazon Ads sync', live.campaigns.length, live.syncedAt)
+  }
 
-  // Daily series: prefer business report daily; fall back to bulk daily tab.
+  // Daily series: prefer business report daily; fall back to bulk daily tab, then live sync.
   const business = reports.businessReport?.parsed as BusinessReportData | undefined
-  const daily = business?.daily?.length ? business.daily : (bulk?.daily ?? null)
+  let daily = business?.daily?.length ? business.daily : (bulk?.daily ?? null)
   if (daily) {
     sources.daily = business?.daily?.length ? meta(reports.businessReport) : meta(reports.bulkCampaigns)
+  } else if (live?.daily?.length) {
+    daily = live.daily as DailySeriesPoint[]
+    sources.daily = liveMeta('Amazon Ads sync', live.daily.length, live.syncedAt)
   }
 
   // SKU economics — reuse the P&L merge used across the app.
@@ -93,16 +117,31 @@ export function buildAuditInputs(bundle: ClientBundle): AuditInputs {
   }
 
   const st = reports.searchTerm?.parsed as SearchTermData | undefined
-  const searchTerms = st?.rows?.length ? st.rows : null
+  let searchTerms = st?.rows?.length ? st.rows : null
   if (searchTerms) sources.searchTerms = meta(reports.searchTerm)
+  else if (live?.audit?.searchTerm?.rows?.length) {
+    const a = live.audit.searchTerm
+    searchTerms = a.rows as SearchTermRow[]
+    sources.searchTerms = liveMeta(`Amazon Ads sync · ${a.window.start} → ${a.window.end}`, a.rows.length, a.updatedAt)
+  }
 
   const tg = reports.targeting?.parsed as TargetingData | undefined
-  const targeting = tg?.rows?.length ? tg.rows : null
+  let targeting = tg?.rows?.length ? tg.rows : null
   if (targeting) sources.targeting = meta(reports.targeting)
+  else if (live?.audit?.targeting?.rows?.length) {
+    const a = live.audit.targeting
+    targeting = a.rows as TargetingRow[]
+    sources.targeting = liveMeta(`Amazon Ads sync · ${a.window.start} → ${a.window.end}`, a.rows.length, a.updatedAt)
+  }
 
   const pl = reports.placement?.parsed as PlacementData | undefined
-  const placements = pl?.rows?.length ? pl.rows : null
+  let placements = pl?.rows?.length ? pl.rows : null
   if (placements) sources.placements = meta(reports.placement)
+  else if (live?.audit?.placement?.rows?.length) {
+    const a = live.audit.placement
+    placements = a.rows as PlacementRow[]
+    sources.placements = liveMeta(`Amazon Ads sync · ${a.window.start} → ${a.window.end}`, a.rows.length, a.updatedAt)
+  }
 
   const bs = reports.bulkStructure?.parsed as BulkStructureData | undefined
   const bulkStructure = bs?.rows?.length ? bs.rows : null

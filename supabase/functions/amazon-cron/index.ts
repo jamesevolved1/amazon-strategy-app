@@ -39,6 +39,27 @@ const AD_PRODUCTS = [
   { label: "SD", amazon: "SPONSORED_DISPLAY", reportTypeId: "sdCampaigns" },
 ]
 
+// ---- PPC-audit reports (SP search term / targeting / placement) ----
+// Requested once per AUDIT_STALE_MS as SUMMARY (whole-window totals, no date
+// column), tagged kind:"audit" in pending_reports so the campaign pipeline
+// never ingests them. Rows are transformed to the app's SearchTermRow /
+// TargetingRow / PlacementRow shapes and stored under synced_data.audit.
+const AUDIT_STALE_MS = 24 * 60 * 60 * 1000
+const AUDIT_REPORTS: Array<{ kind: string; reportTypeId: string; groupBy: string[]; columns: string[] }> = [
+  {
+    kind: "searchTerm", reportTypeId: "spSearchTerm", groupBy: ["searchTerm"],
+    columns: ["searchTerm", "keyword", "matchType", "campaignId", "campaignName", "adGroupId", "adGroupName", "impressions", "clicks", "cost", "sales14d", "purchases14d"],
+  },
+  {
+    kind: "targeting", reportTypeId: "spTargeting", groupBy: ["targeting"],
+    columns: ["keyword", "keywordType", "matchType", "campaignId", "campaignName", "adGroupId", "adGroupName", "impressions", "clicks", "cost", "sales14d", "purchases14d"],
+  },
+  {
+    kind: "placement", reportTypeId: "spCampaigns", groupBy: ["campaign", "campaignPlacement"],
+    columns: ["campaignId", "campaignName", "placementClassification", "impressions", "clicks", "cost", "sales14d", "purchases14d"],
+  },
+]
+
 const SB_V2_METRICS = "campaignId,campaignName,cost,impressions,clicks,attributedSales14d,attributedConversions14d"
 const SB_RECENT_MUTABLE_DAYS = 4
 const SB_REFRESH_MS = 6 * 60 * 60 * 1000
@@ -123,7 +144,9 @@ async function processAds(sb: any, conn: any, clientId: string, clientSecret: st
   const profileIds: number[] = profileMeta.length > 0 ? profileMeta.map(p => p.profileId) : (conn.amazon_profile_ids ?? [])
   const profileMap = new Map<number, any>(profileMeta.map(p => [p.profileId, p]))
 
-  const pending: any[] = Array.isArray(conn.pending_reports) ? [...conn.pending_reports] : []
+  const allPending: any[] = Array.isArray(conn.pending_reports) ? [...conn.pending_reports] : []
+  const pending = allPending.filter(p => p.kind !== "audit")
+  const auditPending = allPending.filter(p => p.kind === "audit")
   let synced = conn.synced_data ?? { campaigns: [], daily: [] }
   const ingestedRows: any[] = []
   const stillPending: any[] = []
@@ -140,6 +163,39 @@ async function processAds(sb: any, conn: any, clientId: string, clientSecret: st
       } catch { stillPending.push({ ...p, status: "FAILED" }) }
     } else if (s.status === "FAILED") { /* drop */ }
     else stillPending.push({ ...p, status: s.status })
+  }
+
+  // ---- PPC-audit reports: poll, transform, fold into synced.audit ----
+  const auditStillPending: any[] = []
+  const auditIngested: Record<string, any[]> = {}
+  for (const p of auditPending) {
+    if (downloads >= ADS_DOWNLOADS_PER_CONN) { auditStillPending.push(p); continue }
+    const s = await adsReportStatus(p.reportId, p.profileId, token, clientId)
+    if (s.status === "COMPLETED" && s.url) {
+      try {
+        const rows = await downloadGzipJson(s.url)
+        const shaped = transformAuditRows(p.reportKind, rows)
+        ;(auditIngested[p.reportKind] ??= []).push({ batchId: p.batchId, window: { start: p.startDate, end: p.endDate }, rows: shaped })
+        downloads++
+      } catch { auditStillPending.push({ ...p, status: "FAILED" }) }
+    } else if (s.status === "FAILED") { /* drop */ }
+    else auditStillPending.push({ ...p, status: s.status })
+  }
+  if (Object.keys(auditIngested).length > 0) {
+    synced.audit = synced.audit ?? {}
+    for (const [kind, batches] of Object.entries(auditIngested)) {
+      for (const b of batches) {
+        const cur = synced.audit[kind]
+        // New batch replaces the old dataset for that kind; same batch
+        // (another profile's report) appends.
+        if (!cur || cur.batchId !== b.batchId) {
+          synced.audit[kind] = { batchId: b.batchId, window: b.window, updatedAt: new Date().toISOString(), rows: b.rows }
+        } else {
+          cur.rows = [...cur.rows, ...b.rows]
+          cur.updatedAt = new Date().toISOString()
+        }
+      }
+    }
   }
 
   // SP+SD live in the v3 "base" fields; SB comes from the v2 pipeline and is
@@ -197,9 +253,17 @@ async function processAds(sb: any, conn: any, clientId: string, clientSecret: st
     if (newPending.length > 0) synced.adsRefreshedAt = Date.now()
   }
 
+  // Request fresh audit reports once per AUDIT_STALE_MS.
+  let newAuditPending: any[] = []
+  const auditStale = !synced.auditRefreshedAt || (Date.now() - synced.auditRefreshedAt > AUDIT_STALE_MS)
+  if (auditStillPending.length === 0 && auditPending.length === 0 && auditStale && profileIds.length > 0) {
+    newAuditPending = await requestAuditReports(profileIds, token, clientId)
+    if (newAuditPending.length > 0) synced.auditRefreshedAt = Date.now()
+  }
+
   const updates: any = {
     access_token: token, amazon_profile_ids: profileIds,
-    pending_reports: [...stillPending, ...newPending],
+    pending_reports: [...stillPending, ...newPending, ...auditStillPending, ...newAuditPending],
     last_synced_at: new Date().toISOString(), last_sync_error: null,
     synced_data: synced,
   }
@@ -246,6 +310,108 @@ function adsColumns(p: string): string[] {
   const base = ["date", "campaignId", "campaignName", "campaignStatus", "impressions", "clicks", "cost"]
   if (p === "SP") return [...base, "sales14d", "purchases14d"]  // 14-day attribution (Amazon console default)
   return [...base, "sales", "purchases"]
+}
+
+// ---- PPC-audit report request + row transforms ----
+
+async function requestAuditReports(profileIds: number[], token: string, clientId: string) {
+  const end = new Date(), start = new Date(Date.now() - ADS_DAYS_BACK * 86_400_000)
+  const startIso = isoDate(start), endIso = isoDate(end)
+  const out: any[] = []
+  for (const spec of AUDIT_REPORTS) {
+    const batchId = crypto.randomUUID()   // one batch per kind — profiles of the same batch append
+    for (const profileId of profileIds) {
+      try {
+        const resp = await fetch(`${ADS_API}/reporting/reports`, {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Amazon-Advertising-API-ClientId": clientId,
+            "Amazon-Advertising-API-Scope": String(profileId),
+            Accept: "application/vnd.createasyncreportresponse.v3+json",
+            "Content-Type": "application/vnd.createasyncreportrequest.v3+json",
+          },
+          body: JSON.stringify({
+            name: `audit ${spec.kind} ${startIso}..${endIso}`,
+            startDate: startIso, endDate: endIso,
+            configuration: {
+              adProduct: "SPONSORED_PRODUCTS",
+              groupBy: spec.groupBy,
+              columns: spec.columns,
+              reportTypeId: spec.reportTypeId,
+              timeUnit: "SUMMARY",
+              format: "GZIP_JSON",
+            },
+          }),
+        })
+        if (resp.ok) {
+          const j = await resp.json()
+          out.push({
+            kind: "audit", reportKind: spec.kind,
+            reportId: j.reportId, profileId, status: "PENDING",
+            requestedAt: new Date().toISOString(), startDate: startIso, endDate: endIso, batchId,
+          })
+        } else {
+          console.error("audit report request", spec.kind, profileId, resp.status, await resp.text().catch(() => ""))
+        }
+      } catch (e) { console.error("audit report request", spec.kind, profileId, msg(e)) }
+    }
+  }
+  return out
+}
+
+// Shape raw v3 report rows into the app's SearchTermRow/TargetingRow/PlacementRow.
+function transformAuditRows(kind: string, rows: any[]): any[] {
+  const n = (v: any) => (typeof v === "number" && isFinite(v) ? v : 0)
+  const ratios = (impressions: number, clicks: number, spend: number, sales: number) => ({
+    ctr: impressions > 0 ? (clicks / impressions) * 100 : 0,
+    cpc: clicks > 0 ? spend / clicks : 0,
+    roas: spend > 0 ? sales / spend : 0,
+    acos: sales > 0 ? (spend / sales) * 100 : 0,
+  })
+  if (kind === "searchTerm") {
+    return rows
+      .filter(r => n(r.clicks) > 0 || n(r.purchases14d) > 0)   // storage guard: zero-signal rows dropped
+      .map(r => {
+        const impressions = n(r.impressions), clicks = n(r.clicks), spend = n(r.cost)
+        const sales = n(r.sales14d), orders = n(r.purchases14d)
+        return {
+          campaignName: String(r.campaignName ?? ""), adGroupName: String(r.adGroupName ?? ""),
+          targeting: String(r.keyword ?? ""), matchType: String(r.matchType ?? ""),
+          searchTerm: String(r.searchTerm ?? ""),
+          impressions, clicks, spend, sales, orders,
+          ...ratios(impressions, clicks, spend, sales),
+        }
+      })
+  }
+  if (kind === "targeting") {
+    return rows.map(r => {
+      const impressions = n(r.impressions), clicks = n(r.clicks), spend = n(r.cost)
+      const sales = n(r.sales14d), orders = n(r.purchases14d)
+      const { ctr: _ctr, ...rest } = ratios(impressions, clicks, spend, sales)
+      return {
+        campaignName: String(r.campaignName ?? ""), adGroupName: String(r.adGroupName ?? ""),
+        targeting: String(r.keyword ?? ""), matchType: String(r.matchType ?? r.keywordType ?? ""),
+        impressions, clicks, spend, sales, orders,
+        ...rest,
+      }
+    })
+  }
+  if (kind === "placement") {
+    return rows.map(r => {
+      const impressions = n(r.impressions), clicks = n(r.clicks), spend = n(r.cost)
+      const sales = n(r.sales14d), orders = n(r.purchases14d)
+      const { ctr: _ctr, acos: _acos, ...rest } = ratios(impressions, clicks, spend, sales)
+      return {
+        campaignName: String(r.campaignName ?? ""),
+        placement: String(r.placementClassification ?? ""),
+        biddingStrategy: "",
+        impressions, clicks, spend, sales, orders,
+        ...rest,
+      }
+    })
+  }
+  return []
 }
 
 async function adsReportStatus(reportId: string, profileId: number, token: string, clientId: string) {

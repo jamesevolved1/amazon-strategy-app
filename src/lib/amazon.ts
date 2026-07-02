@@ -67,7 +67,17 @@ export interface AmazonConnection {
   access_token_expires_at: string | null
   amazon_profile_ids: number[] | null
   pending_reports: PendingReport[]
-  synced_data: { campaigns: SyncedCampaign[]; daily?: SyncedDaily[] } | null
+  synced_data: {
+    campaigns: SyncedCampaign[]
+    daily?: SyncedDaily[]
+    /** PPC-audit datasets auto-pulled by the cron (SP search term / targeting / placement). */
+    audit?: Partial<Record<'searchTerm' | 'targeting' | 'placement', {
+      batchId: string
+      window: { start: string; end: string }
+      updatedAt: string
+      rows: unknown[]
+    }>>
+  } | null
   synced_data_at: string | null
   last_synced_at: string | null
   last_sync_error: string | null

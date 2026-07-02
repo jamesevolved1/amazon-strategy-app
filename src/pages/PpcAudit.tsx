@@ -4,17 +4,31 @@ import { Panel, Pill, Button, EmptyState, SectionHeader } from '../components/ui
 import { DataQualityWarnings } from '../components/DataQualityWarnings'
 import { useStore } from '../lib/store'
 import { relativeTime } from '../lib/format'
-import { buildAuditInputs } from '../audit/inputs'
+import { useAmazonConnections } from '../lib/amazon'
+import { buildAuditInputs, type LiveSyncedData } from '../audit/inputs'
 import { evaluateGate, type GateResult } from '../audit/gate'
 
 export function PpcAudit() {
   const { currentClient, currentBundle } = useStore()
+  const { connections } = useAmazonConnections()
 
   if (!currentClient || !currentBundle) {
     return <EmptyState title="No client selected" description="Add a client before running a PPC audit." />
   }
 
-  const inputs = useMemo(() => buildAuditInputs(currentBundle), [currentBundle])
+  // Live Amazon Ads sync for this client — fills gate slots that have no upload.
+  const live = useMemo<LiveSyncedData | null>(() => {
+    const conn = connections.find(c => c.app_client_id === currentClient.id)
+    if (!conn?.synced_data) return null
+    return {
+      campaigns: conn.synced_data.campaigns,
+      daily: conn.synced_data.daily,
+      audit: conn.synced_data.audit,
+      syncedAt: conn.synced_data_at,
+    }
+  }, [connections, currentClient.id])
+
+  const inputs = useMemo(() => buildAuditInputs(currentBundle, live), [currentBundle, live])
   const gate = useMemo(() => evaluateGate(inputs), [inputs])
 
   return (
@@ -92,7 +106,7 @@ function GatePanel({ gate }: { gate: GateResult }) {
               {item.present ? (
                 <div className="text-2xs text-ink-faint truncate">
                   {item.rows != null && <>{item.rows.toLocaleString()} rows · </>}
-                  {item.fileName}{item.uploadedAt && <> · {relativeTime(item.uploadedAt)}</>}
+                  {item.fileName ?? item.sourceLabel}{item.uploadedAt && <> · {relativeTime(item.uploadedAt)}</>}
                 </div>
               ) : (
                 <div className="text-2xs text-ink-faint">Missing</div>
