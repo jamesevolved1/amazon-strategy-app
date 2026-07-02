@@ -1,13 +1,13 @@
 import React, { useEffect, useState } from 'react'
 import {
-  BarChart3, LineChart, Boxes, Target, ClipboardCheck, CalendarDays, ShieldCheck, Upload, Users, Settings, Plus, ChevronsUpDown, Check, Trash2, PanelLeftClose, PanelLeftOpen, Megaphone, Zap, Wand2, FileText, Sprout,
+  BarChart3, LineChart, Boxes, Target, ClipboardCheck, CalendarDays, ShieldCheck, Upload, Users, Settings, Plus, ChevronsUpDown, Check, Trash2, PanelLeftClose, PanelLeftOpen, Megaphone, Zap, Wand2, FileText, Sprout, Hammer,
 } from 'lucide-react'
 import { useStore } from '../lib/store'
 import { cx } from './ui'
 import type { Marketplace } from '../types'
 
 export type PageId =
-  | 'reporting' | 'deepdive' | 'actions' | 'optimizer' | 'harvest' | 'campaigns' | 'pnl' | 'parent' | 'adPotential' | 'performance'
+  | 'reporting' | 'deepdive' | 'actions' | 'optimizer' | 'harvest' | 'builder' | 'campaigns' | 'pnl' | 'parent' | 'adPotential' | 'performance'
   | 'optimization' | 'audit' | 'upload' | 'clients' | 'settings'
 
 interface Item {
@@ -22,6 +22,7 @@ const NAV: Item[] = [
   { id: 'actions',      label: 'Action Center',        icon: <Zap className="w-4 h-4" /> },
   { id: 'optimizer',    label: 'Optimizer',            icon: <Wand2 className="w-4 h-4" /> },
   { id: 'harvest',      label: 'Harvest & Negate',     icon: <Sprout className="w-4 h-4" /> },
+  { id: 'builder',      label: 'Campaign Builder',     icon: <Hammer className="w-4 h-4" /> },
   { id: 'campaigns',    label: 'Campaign Manager',     icon: <Megaphone className="w-4 h-4" /> },
   { id: 'pnl',          label: 'P&L Dashboard',        icon: <BarChart3 className="w-4 h-4" /> },
   { id: 'parent',       label: 'Parent ASIN P&L',      icon: <Boxes className="w-4 h-4" /> },
