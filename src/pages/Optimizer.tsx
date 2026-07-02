@@ -255,9 +255,14 @@ function ChangeLogPanel({ log, ccy }: { log: ChangeLogEntry[]; ccy: Currency }) 
         {shown.map(e => (
           <div key={e.id} className="flex items-center gap-2 text-2xs text-ink-mute tnum border-t border-line pt-1.5 first:border-0 first:pt-0">
             <span className="text-ink-faint w-16 shrink-0">{e.date.slice(0, 10)}</span>
-            <span className={cx('w-12 shrink-0 font-medium', e.action === 'raise' ? 'text-[#1f7a4a]' : e.action === 'lower' ? 'text-[#8b6a18]' : 'text-[#9c4651]')}>{e.action}</span>
+            <span className={cx('w-14 shrink-0 font-medium', (e.action === 'raise' || e.action === 'harvest') ? 'text-[#1f7a4a]' : e.action === 'lower' ? 'text-[#8b6a18]' : 'text-[#9c4651]')}>{e.action}</span>
             <span className="flex-1 truncate text-ink">{e.text}</span>
-            <span className="shrink-0">{e.action === 'negate' ? 'paused' : `${currency(e.fromBid, ccy)} → ${currency(e.toBid ?? 0, ccy)}`}</span>
+            <span className="shrink-0">
+              {e.action === 'negate' ? 'paused'
+                : e.action === 'negative' ? 'negative exact'
+                : e.action === 'harvest' ? `new exact @ ${currency(e.toBid ?? 0, ccy)}`
+                : `${currency(e.fromBid, ccy)} → ${currency(e.toBid ?? 0, ccy)}`}
+            </span>
           </div>
         ))}
       </div>

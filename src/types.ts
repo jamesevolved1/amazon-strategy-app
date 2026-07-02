@@ -284,9 +284,9 @@ export interface ChangeLogEntry {
   campaignId: string
   text: string
   matchType?: string
-  action: 'raise' | 'lower' | 'negate'
+  action: 'raise' | 'lower' | 'negate' | 'harvest' | 'negative'
   fromBid: number
-  toBid: number | null    // null for negate
+  toBid: number | null    // null for negate/negative; new-exact bid for harvest
   note?: string
   batchId: string         // groups one export together (matches the reverse file)
 }

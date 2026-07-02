@@ -6,6 +6,7 @@ import { ReportingDashboard } from './pages/ReportingDashboard'
 import { DeepDive } from './pages/DeepDive'
 import { ActionCenter } from './pages/ActionCenter'
 import { Optimizer } from './pages/Optimizer'
+import { HarvestNegate } from './pages/HarvestNegate'
 import { CampaignManager } from './pages/CampaignManager'
 import { PnLDashboard } from './pages/PnLDashboard'
 import { ParentASIN } from './pages/ParentASIN'
@@ -23,6 +24,7 @@ const NAV_LABEL: Record<PageId, string> = {
   deepdive: 'Deep Dive',
   actions: 'Action Center',
   optimizer: 'Optimizer',
+  harvest: 'Harvest & Negate',
   campaigns: 'Campaign Manager',
   pnl: 'P&L Dashboard',
   parent: 'Parent ASIN P&L',
@@ -129,6 +131,7 @@ function PageRouter({ page }: { page: PageId }) {
     case 'deepdive':     return <DeepDive />
     case 'actions':      return <ActionCenter />
     case 'optimizer':    return <Optimizer />
+    case 'harvest':      return <HarvestNegate />
     case 'campaigns':    return <CampaignManager />
     case 'pnl':          return <PnLDashboard />
     case 'parent':       return <ParentASIN />
@@ -145,7 +148,7 @@ function PageRouter({ page }: { page: PageId }) {
 function readHash(): PageId {
   const h = (location.hash || '').replace(/^#\/?/, '')
   switch (h) {
-    case 'reporting': case 'deepdive': case 'actions': case 'optimizer': case 'campaigns': case 'pnl': case 'parent': case 'adPotential':
+    case 'reporting': case 'deepdive': case 'actions': case 'optimizer': case 'harvest': case 'campaigns': case 'pnl': case 'parent': case 'adPotential':
     case 'performance': case 'optimization': case 'audit': case 'upload': case 'clients': case 'settings':
       return h
     default:
