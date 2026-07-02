@@ -11,6 +11,7 @@ import { pullOptimizerData } from '../lib/optimize'
 import { optimizeBids, defaultSettings, type OptEntity, type OptSettings, type BidChange } from '../utils/bidOptimizer'
 import { downloadBulkSheet, downloadReverseSheet } from '../utils/optimizerExport'
 import { currency, currencyWhole, multiplier, num } from '../lib/format'
+import { modeInfo } from '../utils/lifecycle'
 import type { ChangeLogEntry, Currency } from '../types'
 
 type Phase = 'idle' | 'running' | 'ready' | 'error'
@@ -101,6 +102,11 @@ export function Optimizer() {
           <div className="text-xs text-ink-faint flex items-center gap-1.5"><Wand2 className="w-3.5 h-3.5" /> Optimizer</div>
           <h1 className="text-xl font-semibold text-ink mt-0.5">{currentClient.name}</h1>
           <p className="text-sm text-ink-mute mt-1">Pull live keyword bids + performance, review the ROAS-based changes, then export an upload sheet, a rollback file, and a change log.</p>
+          {bundle.accountMode && (
+            <p className="text-2xs text-ink-faint mt-1.5">
+              <span className="font-medium text-ink-mute">{modeInfo(bundle.accountMode).label} mode:</span> {modeInfo(bundle.accountMode).optimizer}
+            </p>
+          )}
         </div>
         <Button variant="primary" icon={phase === 'running' ? undefined : <Play className="w-4 h-4" />} disabled={phase === 'running'} onClick={run}>
           {phase === 'running' ? 'Running…' : phase === 'ready' ? 'Re-run' : 'Run optimizer'}

@@ -3,6 +3,7 @@
 
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react'
 import type {
+  AccountMode,
   ChangeLogEntry,
   Client,
   ClientBundle,
@@ -196,6 +197,9 @@ interface StoreCtx {
 
   // Optimizer change-log (audit trail of exported bid/negation changes)
   addChangeLogEntries: (entries: ChangeLogEntry[]) => void
+
+  // §2.2 Account Mode / lifecycle phase
+  setAccountMode: (mode: AccountMode) => void
 }
 
 const Ctx = createContext<StoreCtx | null>(null)
@@ -423,6 +427,10 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     updateBundle(b => ({ ...b, changeLog: [...entries, ...(b.changeLog ?? [])].slice(0, 500) }))
   }, [updateBundle])
 
+  const setAccountMode: StoreCtx['setAccountMode'] = useCallback((mode) => {
+    updateBundle(b => ({ ...b, accountMode: mode }))
+  }, [updateBundle])
+
   const ctx = useMemo<StoreCtx>(() => ({
     state, currentClient, currentBundle, clients,
     supabaseConfigured: isSupabaseConfigured(),
@@ -432,7 +440,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     setReport, clearReport, clearAllReports,
     addTask, updateTask, toggleTask, deleteTask,
     addTaskFor, addTasksFor, updateTaskFor, toggleTaskFor, deleteTaskFor, clearPlaybookFor,
-    setActionDecision, addChangeLogEntries,
+    setActionDecision, addChangeLogEntries, setAccountMode,
   }), [state, currentClient, currentBundle, clients,
        addClient, renameClient, deleteClient, switchClient, setClientLaunch,
        setGoals,
@@ -440,7 +448,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
        setReport, clearReport, clearAllReports,
        addTask, updateTask, toggleTask, deleteTask,
        addTaskFor, addTasksFor, toggleTaskFor, deleteTaskFor, clearPlaybookFor,
-       setActionDecision, addChangeLogEntries])
+       setActionDecision, addChangeLogEntries, setAccountMode])
 
   return <Ctx.Provider value={ctx}>{children}</Ctx.Provider>
 }

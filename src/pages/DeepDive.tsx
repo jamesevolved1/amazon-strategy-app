@@ -4,13 +4,15 @@
 // clean, ruthless, print-ready. Move-by-move approvals live in the Action Center.
 
 import React, { useMemo } from 'react'
-import { FileText, Printer, Target, AlertTriangle, TrendingUp, Layers, ArrowRight, CircleCheck, CircleAlert, CircleX } from 'lucide-react'
+import { FileText, Printer, Target, AlertTriangle, TrendingUp, Layers, ArrowRight, CircleCheck, CircleAlert, CircleX, Compass } from 'lucide-react'
 import { Panel, EmptyState, Button, cx } from '../components/ui'
 import { useStore } from '../lib/store'
 import { useClientCampaigns } from '../lib/campaignData'
 import { useSpApiConnections } from '../lib/spapi'
 import { currencyWhole, multiplier, percent, num } from '../lib/format'
 import { buildDeepDive, type Verdict, type HealthFlag } from '../utils/deepDive'
+import { ACCOUNT_MODES, modeInfo, classifyPhase, challengeMode, type ModeInfo } from '../utils/lifecycle'
+import type { AccountMode } from '../types'
 
 const VERDICT_BADGE: Record<Verdict, { label: string; cls: string; icon: React.ReactNode }> = {
   on_track:    { label: 'On track',             cls: 'bg-accent-mintSoft text-[#1f7a4a]', icon: <CircleCheck className="w-3.5 h-3.5" /> },
@@ -28,7 +30,7 @@ const FLAG_DOT: Record<HealthFlag, string> = {
 }
 
 export function DeepDive() {
-  const { currentClient } = useStore()
+  const { currentClient, currentBundle: bundle, setAccountMode } = useStore()
   const campaigns = useClientCampaigns()
   const { connections } = useSpApiConnections()
 
@@ -45,7 +47,6 @@ export function DeepDive() {
     return s > 0 ? s : null
   }, [connections, currentClient?.id])
 
-  const bundle = useStore().currentBundle
   const report = useMemo(
     () => (bundle && currentClient ? buildDeepDive(campaigns, bundle.goals, { totalSales, clientName: currentClient.name, fmt }) : null),
     [campaigns, bundle?.goals, totalSales, ccy, currentClient?.name],
@@ -70,9 +71,22 @@ export function DeepDive() {
   const { goalCheck: g, health: h, leaks, scale, portfolios, execSummary, action } = report
   const badge = VERDICT_BADGE[g.verdict]
 
+  const phaseSignal = classifyPhase(campaigns, bundle.goals, totalSales)
+  const challenge = challengeMode(bundle.accountMode, phaseSignal)
+  const activeMode = modeInfo(bundle.accountMode ?? phaseSignal.suggested)
+
   return (
     <div className="space-y-6 max-w-4xl print:max-w-none">
       <Header name={currentClient.name} onPrint={() => window.print()} />
+
+      {/* Account mode ⇄ lifecycle phase (§2.2) */}
+      <LifecycleSection
+        selected={bundle.accountMode}
+        suggested={phaseSignal.suggested}
+        active={activeMode}
+        challenge={challenge}
+        onSelect={setAccountMode}
+      />
 
       {/* 1 — Executive summary */}
       <Section icon={<FileText className="w-4 h-4" />} title="Executive summary">
@@ -208,6 +222,64 @@ function Header({ name, onPrint }: { name: string; onPrint?: () => void }) {
   )
 }
 
+const MODE_TONE: Record<ModeInfo['tone'], { chip: string; ring: string }> = {
+  mint:  { chip: 'bg-accent-mintSoft text-[#1f7a4a]', ring: 'ring-[#1f7a4a]/40' },
+  peri:  { chip: 'bg-accent-periSoft text-[#3b48a5]', ring: 'ring-[#3b48a5]/40' },
+  gold:  { chip: 'bg-accent-goldSoft text-[#8b6a18]', ring: 'ring-[#8b6a18]/40' },
+  blush: { chip: 'bg-accent-blushSoft text-[#9c4651]', ring: 'ring-[#9c4651]/40' },
+  plum:  { chip: 'bg-[#efe7f5] text-[#6b4a8a]', ring: 'ring-[#6b4a8a]/40' },
+}
+
+function LifecycleSection({ selected, suggested, active, challenge, onSelect }: {
+  selected: AccountMode | undefined
+  suggested: AccountMode
+  active: ModeInfo
+  challenge: string | null
+  onSelect: (m: AccountMode) => void
+}) {
+  return (
+    <Section icon={<Compass className="w-4 h-4" />} title="Account mode & lifecycle phase" sub="Sets the profit posture for everything below">
+      <Panel>
+        <div className="flex flex-wrap gap-1.5">
+          {ACCOUNT_MODES.map(m => {
+            const isSel = selected === m.id
+            const isSug = !selected && suggested === m.id
+            const tone = MODE_TONE[m.tone]
+            return (
+              <button
+                key={m.id}
+                onClick={() => onSelect(m.id)}
+                className={cx('px-3 py-1.5 rounded-lg text-sm font-medium border transition-colors',
+                  isSel ? `${tone.chip} border-transparent ring-2 ${tone.ring}`
+                  : 'border-line text-ink-mute hover:text-ink hover:bg-[#f4f5f8]')}
+              >
+                {m.label}
+                {isSug && <span className="ml-1.5 text-2xs text-ink-faint">· suggested</span>}
+              </button>
+            )
+          })}
+        </div>
+
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-x-5 gap-y-3 mt-4 pt-4 border-t border-line/70">
+          <Stat label="Phase" value={active.phase} sub={active.trigger} />
+          <Stat label="Profit posture" value={active.goal} sub={active.posture} />
+          <Stat label="How the optimizer plays it" value="" sub={active.optimizer} />
+        </div>
+
+        {!selected && (
+          <p className="text-2xs text-ink-faint mt-3">No mode set — showing the data-suggested phase (<span className="font-medium">{modeInfo(suggested).label}</span>). Pick one above to lock the posture.</p>
+        )}
+        {challenge && (
+          <div className="mt-3 rounded-xl2 border border-accent-gold/30 bg-accent-goldSoft/40 px-4 py-3 flex gap-2.5">
+            <AlertTriangle className="w-4 h-4 text-[#8b6a18] shrink-0 mt-0.5" />
+            <p className="text-sm text-ink leading-relaxed"><span className="font-medium text-[#8b6a18]">Data challenge. </span>{challenge}</p>
+          </div>
+        )}
+      </Panel>
+    </Section>
+  )
+}
+
 function Section({ icon, title, sub, children }: { icon: React.ReactNode; title: string; sub?: string; children: React.ReactNode }) {
   return (
     <section className="space-y-2.5">
@@ -225,8 +297,8 @@ function Stat({ label, value, sub, flag = 'none' }: { label: string; value: stri
   return (
     <div>
       <div className="text-2xs font-medium text-ink-faint uppercase tracking-wide">{label}</div>
-      <div className={cx('text-sm font-semibold mt-0.5 tnum', FLAG_TEXT[flag])}>{value}</div>
-      {sub && <div className="text-2xs text-ink-mute mt-0.5">{sub}</div>}
+      {value && <div className={cx('text-sm font-semibold mt-0.5 tnum', FLAG_TEXT[flag])}>{value}</div>}
+      {sub && <div className={cx('text-2xs text-ink-mute', value ? 'mt-0.5' : 'mt-1')}>{sub}</div>}
     </div>
   )
 }

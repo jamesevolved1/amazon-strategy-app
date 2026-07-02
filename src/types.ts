@@ -15,6 +15,10 @@ export interface Client {
   launchStartedAt?: string
 }
 
+// Evolved §2.2 Account Mode ⇄ Lifecycle Phase. Drives profit posture and how
+// aggressively the optimizer should act.
+export type AccountMode = 'launch' | 'grow' | 'harvest' | 'recovery' | 'liquidation'
+
 export interface ClientGoals {
   monthlyAdBudget: number
   primaryTacosGoal: number     // %, e.g. 12
@@ -330,4 +334,5 @@ export interface ClientBundle {
   optimization: OptimizationTask[]
   actionDecisions?: Record<string, ActionDecision>  // Action Center approve/deny + notes
   changeLog?: ChangeLogEntry[]                       // Optimizer export history (newest first)
+  accountMode?: AccountMode                          // §2.2 lifecycle phase (James sets it)
 }
